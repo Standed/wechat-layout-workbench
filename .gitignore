@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.DS_Store
+.env
+config/workbench-settings.json
+output/
+.pycache-check/

@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>西羊石公众号排版工作台</title>
+    <link rel="stylesheet" href="./styles.css?v=260516-team-settings" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">WeChat Layout Workbench</p>
+          <h1>西羊石公众号排版工作台</h1>
+        </div>
+        <div class="actions">
+          <button class="ghost" id="loadSample" type="button">载入示例</button>
+          <button class="primary" id="copyRich" type="button">复制到公众号</button>
+        </div>
+      </header>
+
+      <section class="workspace">
+        <aside class="panel controls">
+          <nav class="side-nav" aria-label="工作台设置">
+            <button class="side-nav-item active" id="navCompose" type="button">
+              <span class="nav-icon">✦</span>
+              <span>排版工作台</span>
+            </button>
+            <button class="side-nav-item" id="navSettings" type="button">
+              <span class="nav-icon">⚙</span>
+              <span>账号与首尾模板</span>
+            </button>
+          </nav>
+
+          <label class="field">
+            <span>目标账号</span>
+            <select id="account">
+              <option>西羊石AI视频</option>
+              <option>羊羊AI视频</option>
+              <option>西羊石AI短剧</option>
+              <option>小石的AI智能体工坊</option>
+            </select>
+          </label>
+
+          <div class="account-note" id="accountNote"></div>
+
+          <section class="settings-box" id="settingsBox" hidden>
+            <div class="settings-head">
+              <p class="eyebrow">Account Template</p>
+              <h3>账号首尾模板</h3>
+            </div>
+            <label class="field">
+              <span>开头模板（Markdown 或 HTML）</span>
+              <textarea id="headerTemplate" class="template-editor" spellcheck="false" placeholder="留空则使用当前默认开头"></textarea>
+            </label>
+            <label class="field">
+              <span>结尾模板（Markdown 或 HTML）</span>
+              <textarea id="footerTemplate" class="template-editor" spellcheck="false" placeholder="留空则使用当前默认结尾"></textarea>
+            </label>
+            <div class="button-row">
+              <button class="primary" id="saveSettings" type="button">保存当前账号模板</button>
+              <button class="ghost" id="resetSettings" type="button">清空当前账号模板</button>
+            </div>
+            <p class="hint">模板按账号保存。空着时，沿用默认西羊石开头和当前账号尾部。</p>
+          </section>
+
+          <div class="compose-area" id="composeArea">
+          <div class="mode-tabs" role="tablist" aria-label="输入方式">
+            <button class="mode-tab active" id="markdownMode" type="button">Markdown</button>
+            <button class="mode-tab" id="richMode" type="button">飞书富文本</button>
+          </div>
+
+          <section class="input-pane active" id="markdownPane">
+            <div class="feishu-import">
+              <label class="field">
+                <span>飞书链接导入</span>
+                <div class="inline-import">
+                  <input id="feishuUrl" type="url" placeholder="粘贴飞书 docx 链接，自动导入正文和图片" />
+                  <button class="ghost" id="importFeishu" type="button">导入</button>
+                </div>
+              </label>
+            </div>
+            <label class="field fill">
+              <span>Markdown 正文</span>
+              <textarea id="markdown" spellcheck="false"></textarea>
+            </label>
+          </section>
+
+          <section class="input-pane" id="richPane">
+            <label class="field fill">
+              <span>飞书富文本</span>
+              <div class="rich-paste" id="richPaste" contenteditable="true">
+                从飞书文档复制正文后，粘贴到这里。
+              </div>
+            </label>
+          </section>
+
+          <div class="button-row">
+            <button class="primary" id="convert" type="button">生成预览</button>
+            <button class="ghost" id="copyHtml" type="button">复制 HTML（备用）</button>
+            <button class="ghost" id="copyMarkdown" type="button">复制 Markdown（调试）</button>
+            <button class="ghost" id="exportCard" type="button">导出长图卡片</button>
+          </div>
+
+          <figure class="card-preview" id="cardPreview"></figure>
+
+          <section class="cover-box">
+            <div class="cover-box-head">
+              <div>
+                <p class="eyebrow">Cover Maker</p>
+                <h3>2.35:1 公众号封面</h3>
+              </div>
+            </div>
+            <label class="field">
+              <span>文章标题</span>
+              <input id="coverTitle" type="text" placeholder="默认使用右侧文章标题" />
+            </label>
+            <label class="field">
+              <span>封面短标题</span>
+              <input id="coverText" type="text" placeholder="4-10 个字最稳，例如：AI 反问法" />
+            </label>
+            <label class="field">
+              <span>视觉锤</span>
+              <input id="visualHammer" type="text" placeholder="例如：一个被 AI 反问框照亮的创作者工作台" />
+            </label>
+            <div class="button-row">
+              <button class="ghost" id="makeCoverPrompt" type="button">生成提示词</button>
+              <button class="primary" id="generateCover" type="button">直接生成封面</button>
+            </div>
+            <textarea id="coverPrompt" class="cover-prompt" spellcheck="false" placeholder="这里会出现可复制给 Codex / GPT Image 的封面提示词"></textarea>
+            <figure class="cover-preview" id="coverPreview"></figure>
+          </section>
+          </div>
+
+          <p class="status" id="status">粘贴文章后生成，右侧就是可复制到公众号的最终排版。</p>
+        </aside>
+
+        <section class="preview-wrap">
+          <div class="preview-head">
+            <div>
+              <p class="eyebrow">公众号预览</p>
+              <h2 id="articleTitle">未命名文章</h2>
+            </div>
+            <span class="chip" id="activeAccount">西羊石AI视频</span>
+          </div>
+          <article class="wechat-canvas" id="preview" contenteditable="true"></article>
+        </section>
+      </section>
+    </main>
+    <script src="./app.js?v=260516-team-settings"></script>
+  </body>
+</html>
