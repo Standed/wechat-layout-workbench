@@ -14,6 +14,9 @@ const accountMeta = {
 };
 
 const el = {
+  shell: document.querySelector(".shell"),
+  controls: document.querySelector("#controls"),
+  sidebarToggle: document.querySelector("#sidebarToggle"),
   account: document.querySelector("#account"),
   navCompose: document.querySelector("#navCompose"),
   navSettings: document.querySelector("#navSettings"),
@@ -57,6 +60,8 @@ let inputMode = "markdown";
 let lastMarkdown = "";
 let coverTextTouched = false;
 let workbenchSettings = { accounts: {} };
+let activeSection = "compose";
+let sidebarCollapsed = window.localStorage.getItem("wechatLayoutSidebarCollapsed") === "true";
 
 function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
@@ -253,6 +258,19 @@ function loadAccountTemplateFields() {
   el.footerTemplate.value = settings.footer || "";
 }
 
+function applySidebarState() {
+  el.shell.classList.toggle("sidebar-collapsed", sidebarCollapsed);
+  el.sidebarToggle.setAttribute("aria-expanded", String(!sidebarCollapsed));
+  el.sidebarToggle.setAttribute("aria-label", sidebarCollapsed ? "展开侧边栏" : "收起侧边栏");
+  el.sidebarToggle.title = sidebarCollapsed ? "展开侧边栏" : "收起侧边栏";
+}
+
+function setSidebarCollapsed(collapsed) {
+  sidebarCollapsed = collapsed;
+  window.localStorage.setItem("wechatLayoutSidebarCollapsed", String(sidebarCollapsed));
+  applySidebarState();
+}
+
 async function loadSettings() {
   try {
     const response = await fetch("/api/settings");
@@ -265,8 +283,13 @@ async function loadSettings() {
   loadAccountTemplateFields();
 }
 
-function setSection(section) {
-  const showSettings = section === "settings";
+function setSection(section, expandSidebar = true) {
+  activeSection = section === "settings" ? "settings" : "compose";
+  if (expandSidebar && sidebarCollapsed) {
+    setSidebarCollapsed(false);
+  }
+  const showSettings = activeSection === "settings";
+  el.controls.dataset.section = activeSection;
   el.settingsBox.hidden = !showSettings;
   el.composeArea.hidden = showSettings;
   el.navCompose.classList.toggle("active", !showSettings);
@@ -567,6 +590,7 @@ el.account.addEventListener("change", () => {
 });
 el.navCompose.addEventListener("click", () => setSection("compose"));
 el.navSettings.addEventListener("click", () => setSection("settings"));
+el.sidebarToggle.addEventListener("click", () => setSidebarCollapsed(!sidebarCollapsed));
 el.saveSettings.addEventListener("click", saveAccountSettings);
 el.resetSettings.addEventListener("click", resetAccountSettings);
 el.markdownMode.addEventListener("click", () => setMode("markdown"));
@@ -619,6 +643,8 @@ el.coverText.addEventListener("input", () => {
   coverTextTouched = true;
 });
 
+applySidebarState();
+setSection(activeSection, false);
 syncAccountNote();
 setMode("markdown");
 loadSettings();
