@@ -299,6 +299,33 @@ button:hover {
   min-width: 76px;
 }
 
+.inline-status {
+  min-height: 20px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.6;
+}
+
+.inline-status[data-state="loading"] {
+  color: var(--accent);
+}
+
+.inline-status[data-state="success"] {
+  color: #18794e;
+}
+
+.inline-status[data-state="error"] {
+  color: #a83232;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.62;
+  transform: none;
+  box-shadow: none;
+}
+
 select,
 textarea,
 .rich-paste,

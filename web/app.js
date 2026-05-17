@@ -35,6 +35,7 @@ const el = {
   richPane: document.querySelector("#richPane"),
   feishuUrl: document.querySelector("#feishuUrl"),
   importFeishu: document.querySelector("#importFeishu"),
+  importStatus: document.querySelector("#importStatus"),
   markdown: document.querySelector("#markdown"),
   richPaste: document.querySelector("#richPaste"),
   preview: document.querySelector("#preview"),
@@ -238,6 +239,11 @@ function setStatus(message, isError = false) {
   el.status.style.color = isError ? "#a83232" : "#6e6a63";
 }
 
+function setImportStatus(message = "", state = "idle") {
+  el.importStatus.textContent = message;
+  el.importStatus.dataset.state = state;
+}
+
 function syncAccountNote() {
   const account = el.account.value;
   el.accountNote.textContent = accountMeta[account].note;
@@ -376,7 +382,9 @@ async function importFeishuDoc() {
   }
   setMode("markdown");
   setStatus("正在从飞书导入文档...");
+  setImportStatus("正在连接飞书并下载正文和图片，文档大时可能需要几十秒。", "loading");
   el.importFeishu.disabled = true;
+  el.importFeishu.textContent = "导入中...";
   try {
     const response = await fetch("/api/import-feishu", {
       method: "POST",
@@ -386,13 +394,19 @@ async function importFeishuDoc() {
     const data = await response.json();
     if (!response.ok) {
       setStatus(data.error || "飞书导入失败。", true);
+      setImportStatus(data.error || "飞书导入失败。请确认文档权限和本地服务。", "error");
       return;
     }
     el.markdown.value = data.markdown;
     await convert();
     setStatus("飞书文档已导入，图片已尽量下载成本地文件。现在可以直接复制公众号富文本。");
+    setImportStatus("导入完成，正文已写入 Markdown 区并生成预览。", "success");
+  } catch (error) {
+    setStatus("飞书导入请求失败。请确认本地服务还在运行。", true);
+    setImportStatus("请求失败：本地服务可能断开，或飞书接口超时。", "error");
   } finally {
     el.importFeishu.disabled = false;
+    el.importFeishu.textContent = "导入";
   }
 }
 

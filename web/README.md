@@ -13,6 +13,16 @@
 
 ## 本地 Python 启动
 
+推荐在仓库根目录运行：
+
+```bash
+./scripts/start-local.sh 8765
+```
+
+脚本会自动重启端口、写日志，并在 macOS 上用 `screen` 保持后台服务。
+
+也可以前台运行：
+
 ```bash
 python3 web/server.py 8765
 ```

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>西羊石公众号排版工作台</title>
-    <link rel="stylesheet" href="./styles.css?v=260517-sidebar" />
+    <link rel="stylesheet" href="./styles.css?v=260517-import-status" />
   </head>
   <body>
     <main class="shell">
@@ -89,6 +89,7 @@
                   <input id="feishuUrl" type="url" placeholder="粘贴飞书 docx 链接，自动导入正文和图片" />
                   <button class="ghost" id="importFeishu" type="button">导入</button>
                 </div>
+                <span class="inline-status" id="importStatus" aria-live="polite"></span>
               </label>
             </div>
             <label class="field fill">
@@ -158,6 +159,6 @@
         </section>
       </section>
     </main>
-    <script src="./app.js?v=260517-sidebar"></script>
+    <script src="./app.js?v=260517-import-status"></script>
   </body>
 </html>
