@@ -67,6 +67,34 @@ OPENAI_IMAGE_QUALITY=high
 
 飞书链接导入依赖本机可用的 `lark-cli` 登录态。没有 `lark-cli` 时仍可使用 Markdown 或飞书富文本粘贴模式。
 
+导入原理：
+
+1. 浏览器把飞书链接发给本地服务的 `/api/import-feishu`。
+2. 本地 Python 服务调用 `lark-cli docs +fetch --doc <链接> --format json`。
+3. `lark-cli` 使用本机飞书登录态读取文档，返回 Markdown 和图片 token。
+4. 本地服务再调用 `lark-cli docs +media-download` 下载图片到 `output/_feishu_media/`。
+5. 页面把 Markdown 转成公众号可复制富文本。
+
+如果 Windows 显示 `[WinError 2] 系统找不到指定的文件`，通常是本机没有安装 `lark-cli`，或者 `lark-cli` 没有加入 PATH。先在 PowerShell 里检查：
+
+```powershell
+lark-cli --version
+lark-cli doctor
+lark-cli auth status
+```
+
+如果第一条就提示找不到命令，先安装并重新打开 PowerShell：
+
+```powershell
+npm install -g @larksuite/cli
+```
+
+如果命令存在但 `doctor` 或 `auth status` 不通过，执行：
+
+```powershell
+lark-cli auth login
+```
+
 ## 账号首尾模板
 
 页面侧边栏进入「账号与首尾模板」，按当前账号保存固定开头和结尾。配置保存在本地：

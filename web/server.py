@@ -7,6 +7,7 @@ import json
 import mimetypes
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -134,7 +135,7 @@ def convert_markdown(markdown: str, account: str) -> dict:
 
 
 def feishu_doc_id(doc: str) -> str:
-    match = re.search(r"/(?:docx|docs)/([A-Za-z0-9]+)", doc)
+    match = re.search(r"/(?:docx|docs|wiki)/([A-Za-z0-9]+)", doc)
     if match:
         return match.group(1)
     return safe_slug(doc)[:32] or "feishu-doc"
@@ -210,6 +211,11 @@ def replace_feishu_images(markdown: str, doc: str) -> str:
 def fetch_feishu_markdown(doc: str) -> str:
     if not doc.strip():
         raise RuntimeError("请提供飞书文档链接。")
+    if not shutil.which("lark-cli"):
+        raise RuntimeError(
+            "未找到 lark-cli，无法导入飞书链接。请先在本机安装并登录 lark-cli，"
+            "或把 lark-cli 所在目录加入 PATH；暂时也可以改用“飞书富文本”粘贴模式。"
+        )
     result = subprocess.run(
         [
             "lark-cli",

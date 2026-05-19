@@ -54,3 +54,31 @@ Docker 会把当前仓库目录挂载到容器 `/app`，所以本地修改 `scri
 ```bash
 OPENAI_API_KEY=你的 key
 ```
+
+## 飞书导入依赖
+
+飞书链接导入不是浏览器直接抓网页，而是本地 Python 服务调用 `lark-cli`：
+
+```bash
+lark-cli docs +fetch --doc "<飞书链接>" --format json
+```
+
+如果 Windows 出现 `[WinError 2] 系统找不到指定的文件`，就是 Python 找不到 `lark-cli` 可执行文件。先检查：
+
+```powershell
+lark-cli --version
+lark-cli doctor
+lark-cli auth status
+```
+
+缺命令时安装：
+
+```powershell
+npm install -g @larksuite/cli
+```
+
+命令存在但没登录时运行：
+
+```powershell
+lark-cli auth login
+```
