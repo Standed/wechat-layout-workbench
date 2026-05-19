@@ -289,6 +289,18 @@ async function loadSettings() {
   loadAccountTemplateFields();
 }
 
+async function checkImportEnvironment() {
+  try {
+    const response = await fetch("/api/health");
+    const data = await response.json();
+    if (!response.ok || !data.larkCli?.ok) {
+      setImportStatus(`飞书导入环境未就绪：${data.larkCli?.error || "请检查 lark-cli 登录态。"}`, "error");
+    }
+  } catch (error) {
+    setImportStatus("无法检查飞书导入环境：本地服务可能未启动。", "error");
+  }
+}
+
 function setSection(section, expandSidebar = true) {
   activeSection = section === "settings" ? "settings" : "compose";
   if (expandSidebar && sidebarCollapsed) {
@@ -662,4 +674,5 @@ setSection(activeSection, false);
 syncAccountNote();
 setMode("markdown");
 loadSettings();
+checkImportEnvironment();
 loadSample();

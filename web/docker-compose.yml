@@ -8,7 +8,10 @@ services:
     environment:
       HOST: 0.0.0.0
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_IMAGE_MODEL: ${OPENAI_IMAGE_MODEL:-gpt-image-2}
+      LARK_CLI_HOME: /root/.lark-cli
     ports:
       - "8765:8765"
     volumes:
       - ..:/app
+      - ${LARK_CLI_CONFIG_DIR:-~/.lark-cli}:/root/.lark-cli

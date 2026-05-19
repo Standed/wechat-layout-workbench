@@ -54,6 +54,19 @@ docker compose -f web/docker-compose.yml up --build
 http://127.0.0.1:8765
 ```
 
+Docker 镜像会内置 `lark-cli`。如果要使用飞书链接导入，需要把宿主机的 `~/.lark-cli` 挂载进容器；默认 compose 已经做了这个映射：
+
+```yaml
+${LARK_CLI_CONFIG_DIR:-~/.lark-cli}:/root/.lark-cli
+```
+
+Windows 如果配置目录不在默认位置，可以设置：
+
+```powershell
+$env:LARK_CLI_CONFIG_DIR="C:\Users\你的用户名\.lark-cli"
+docker compose -f web/docker-compose.yml up --build
+```
+
 ## 可选环境变量
 
 ```bash
@@ -94,6 +107,30 @@ npm install -g @larksuite/cli
 ```powershell
 lark-cli auth login
 ```
+
+Windows 推荐直接运行项目脚本，它会检查 Python、`lark-cli`、飞书登录态、端口和页面：
+
+```powershell
+.\scripts\start-local.ps1 -Port 8765
+```
+
+## 线上部署模式
+
+`xysaiai.cn/admin/imports/feishu` 这类线上导入通常不是依赖访问者电脑的 `lark-cli`，而是网站后端自己接入飞书开放平台：
+
+1. 服务端保存飞书应用的 `FEISHU_APP_ID` / `FEISHU_APP_SECRET`。
+2. 服务端用飞书 OpenAPI 获取 `tenant_access_token` 或用户授权 token。
+3. 后端读取 docx/wiki 内容，解析标题、段落、列表、表格、图片 token。
+4. 后端下载图片并保存到本站对象存储或服务器目录。
+5. 前端只负责输入链接、展示导入结果，不要求用户电脑安装 CLI。
+
+适合团队线上版的推荐路线：
+
+- 内部团队用：先做“服务端飞书应用凭证”模式，限定只有自己团队可访问。
+- 多用户 SaaS 用：再做 OAuth 用户授权模式，每个用户绑定自己的飞书身份。
+- 图片存储：线上不要依赖飞书外链，建议保存到 Cloudflare R2、S3 或服务器本地静态目录。
+
+当前本地版默认是 `lark-cli` 模式；线上版要做到和西堂一样，需要新增服务端飞书 OpenAPI 模式。
 
 ## 账号首尾模板
 

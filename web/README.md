@@ -49,6 +49,19 @@ http://127.0.0.1:8765
 
 Docker 会把当前仓库目录挂载到容器 `/app`，所以本地修改 `scripts/md2wechat.py`、`config/workbench-settings.json`、`output/` 文章和图片后，刷新网页即可使用最新内容。
 
+Docker 镜像内置 Node.js 和 `lark-cli`。飞书链接导入还需要宿主机先登录：
+
+```bash
+lark-cli auth login
+```
+
+然后 compose 会把 `~/.lark-cli` 挂载到容器里。Windows 可手动指定：
+
+```powershell
+$env:LARK_CLI_CONFIG_DIR="C:\Users\你的用户名\.lark-cli"
+docker compose -f web/docker-compose.yml up --build
+```
+
 如果要直接生成封面，需要在环境里提供：
 
 ```bash
@@ -82,3 +95,5 @@ npm install -g @larksuite/cli
 ```powershell
 lark-cli auth login
 ```
+
+线上网站如果要像 `xysaiai.cn/admin/imports/feishu` 那样导入，应改成服务端飞书 OpenAPI 模式：服务端保存飞书应用凭证，下载文档内容和图片，再把图片保存到本站存储。这样访问者不需要本机安装 `lark-cli`。

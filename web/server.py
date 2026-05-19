@@ -148,15 +148,63 @@ def parse_json_from_cli(output: str) -> dict:
     return json.loads(output[start:])
 
 
+def run_lark_cli(args: list[str], timeout: int = 30) -> subprocess.CompletedProcess[str]:
+    executable = shutil.which("lark-cli")
+    if not executable:
+        raise RuntimeError(
+            "未找到 lark-cli，无法导入飞书链接。请先安装 @larksuite/cli 并完成登录；"
+            "如果使用 Docker，请确认镜像已重新 build，并挂载了 .lark-cli 配置目录。"
+        )
+    return subprocess.run(
+        [executable, *args],
+        cwd=str(ROOT),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=timeout,
+        check=False,
+    )
+
+
+def lark_cli_health() -> dict:
+    executable = shutil.which("lark-cli")
+    if not executable:
+        return {
+            "ok": False,
+            "available": False,
+            "error": "未找到 lark-cli。请安装 @larksuite/cli，或使用已内置 lark-cli 的 Docker 镜像。",
+        }
+    health = {"ok": True, "available": True, "path": executable}
+    version = subprocess.run(
+        [executable, "--version"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=10,
+        check=False,
+    )
+    health["version"] = (version.stdout or version.stderr).strip()
+    status = run_lark_cli(["auth", "status", "--verify"], timeout=30)
+    health["authOk"] = status.returncode == 0
+    if status.returncode != 0:
+        health["ok"] = False
+        health["error"] = (status.stdout or status.stderr or "lark-cli auth status --verify 未通过").strip()
+    else:
+        try:
+            health["auth"] = parse_json_from_cli(status.stdout)
+        except Exception:
+            health["auth"] = status.stdout.strip()
+    return health
+
+
 def download_feishu_media(token: str, out_dir: Path) -> str | None:
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = out_dir / token
     existing = sorted(out_dir.glob(f"{token}.*"))
     if existing:
         return existing[0].relative_to(ROOT).as_posix()
-    result = subprocess.run(
+    result = run_lark_cli(
         [
-            "lark-cli",
             "docs",
             "+media-download",
             "--token",
@@ -165,12 +213,7 @@ def download_feishu_media(token: str, out_dir: Path) -> str | None:
             stem.relative_to(ROOT).as_posix(),
             "--overwrite",
         ],
-        cwd=str(ROOT),
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
         timeout=90,
-        check=False,
     )
     if result.returncode != 0:
         return None
@@ -211,14 +254,8 @@ def replace_feishu_images(markdown: str, doc: str) -> str:
 def fetch_feishu_markdown(doc: str) -> str:
     if not doc.strip():
         raise RuntimeError("请提供飞书文档链接。")
-    if not shutil.which("lark-cli"):
-        raise RuntimeError(
-            "未找到 lark-cli，无法导入飞书链接。请先在本机安装并登录 lark-cli，"
-            "或把 lark-cli 所在目录加入 PATH；暂时也可以改用“飞书富文本”粘贴模式。"
-        )
-    result = subprocess.run(
+    result = run_lark_cli(
         [
-            "lark-cli",
             "docs",
             "+fetch",
             "--doc",
@@ -226,11 +263,7 @@ def fetch_feishu_markdown(doc: str) -> str:
             "--format",
             "json",
         ],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
         timeout=90,
-        check=False,
     )
     if result.returncode != 0:
         detail = result.stdout or result.stderr or "lark-cli docs +fetch 执行失败。"
@@ -758,6 +791,10 @@ class Handler(SimpleHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self) -> None:
+        if self.path == "/api/health":
+            self.send_json(200, {"ok": True, "larkCli": lark_cli_health()})
+            return
+
         if self.path == "/api/settings":
             self.send_json(200, load_settings())
             return
