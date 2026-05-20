@@ -7,6 +7,7 @@ RUN apt-get update \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && npm install -g @larksuite/cli \
+    && (lark-cli update --force || true) \
     && pip install --no-cache-dir pillow \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*

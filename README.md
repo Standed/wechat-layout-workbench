@@ -92,6 +92,7 @@ OPENAI_IMAGE_QUALITY=high
 
 ```powershell
 lark-cli --version
+lark-cli update
 lark-cli doctor
 lark-cli auth status
 ```
@@ -107,6 +108,14 @@ npm install -g @larksuite/cli
 ```powershell
 lark-cli auth login
 ```
+
+如果看到 `[deprecated] docs +fetch is using the v1 API`，说明本机 lark-doc skill 还是旧版，执行：
+
+```powershell
+lark-cli update
+```
+
+然后重新启动本项目。
 
 Windows 推荐直接运行项目脚本，它会检查 Python、`lark-cli`、飞书登录态、端口和页面：
 

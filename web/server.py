@@ -147,6 +147,12 @@ def cli_text(result: subprocess.CompletedProcess[str] | None) -> str:
     return "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
 
 
+def normalize_lark_error(text: str) -> str:
+    if "deprecated" in text.lower() and "api-version v2" in text.lower():
+        return "当前 lark-cli / lark-doc skill 仍在使用旧版 v1 API。请先运行 lark-cli update，然后重新启动本项目。"
+    return text
+
+
 def parse_json_from_cli(output: str | None) -> dict:
     output = output or ""
     start = output.find("{")
@@ -274,6 +280,8 @@ def fetch_feishu_markdown(doc: str) -> str:
         [
             "docs",
             "+fetch",
+            "--api-version",
+            "v2",
             "--doc",
             doc.strip(),
             "--format",
@@ -282,7 +290,7 @@ def fetch_feishu_markdown(doc: str) -> str:
         timeout=90,
     )
     if result.returncode != 0:
-        detail = cli_text(result) or "lark-cli docs +fetch 执行失败。"
+        detail = normalize_lark_error(cli_text(result) or "lark-cli docs +fetch 执行失败。")
         raise RuntimeError(detail.strip())
     data = parse_json_from_cli(cli_text(result))
     if not data.get("ok"):

@@ -80,6 +80,7 @@ lark-cli docs +fetch --doc "<飞书链接>" --format json
 
 ```powershell
 lark-cli --version
+lark-cli update
 lark-cli doctor
 lark-cli auth status
 ```
@@ -94,6 +95,12 @@ npm install -g @larksuite/cli
 
 ```powershell
 lark-cli auth login
+```
+
+如果提示 `docs +fetch is using the v1 API`，运行：
+
+```powershell
+lark-cli update
 ```
 
 线上网站如果要像 `xysaiai.cn/admin/imports/feishu` 那样导入，应改成服务端飞书 OpenAPI 模式：服务端保存飞书应用凭证，下载文档内容和图片，再把图片保存到本站存储。这样访问者不需要本机安装 `lark-cli`。
