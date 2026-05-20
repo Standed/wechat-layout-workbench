@@ -244,6 +244,14 @@ function setImportStatus(message = "", state = "idle") {
   el.importStatus.dataset.state = state;
 }
 
+function importErrorMessage(data, fallback = "飞书导入失败。") {
+  const details = data?.diagnostics?.larkCli;
+  if (details?.error) {
+    return `${fallback}${details.error}`;
+  }
+  return data?.error || fallback;
+}
+
 function syncAccountNote() {
   const account = el.account.value;
   el.accountNote.textContent = accountMeta[account].note;
@@ -405,8 +413,9 @@ async function importFeishuDoc() {
     });
     const data = await response.json();
     if (!response.ok) {
-      setStatus(data.error || "飞书导入失败。", true);
-      setImportStatus(data.error || "飞书导入失败。请确认文档权限和本地服务。", "error");
+      const message = importErrorMessage(data, "飞书导入失败：");
+      setStatus(message, true);
+      setImportStatus(message, "error");
       return;
     }
     el.markdown.value = data.markdown;

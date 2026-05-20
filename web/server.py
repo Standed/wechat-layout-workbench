@@ -141,7 +141,14 @@ def feishu_doc_id(doc: str) -> str:
     return safe_slug(doc)[:32] or "feishu-doc"
 
 
-def parse_json_from_cli(output: str) -> dict:
+def cli_text(result: subprocess.CompletedProcess[str] | None) -> str:
+    if result is None:
+        return ""
+    return "\n".join(part for part in (result.stdout, result.stderr) if part).strip()
+
+
+def parse_json_from_cli(output: str | None) -> dict:
+    output = output or ""
     start = output.find("{")
     if start == -1:
         raise RuntimeError(output.strip() or "lark-cli 没有返回 JSON。")
@@ -184,16 +191,22 @@ def lark_cli_health() -> dict:
         check=False,
     )
     health["version"] = (version.stdout or version.stderr).strip()
-    status = run_lark_cli(["auth", "status", "--verify"], timeout=30)
+    try:
+        status = run_lark_cli(["auth", "status", "--verify"], timeout=30)
+    except Exception as exc:
+        health["ok"] = False
+        health["authOk"] = False
+        health["error"] = f"lark-cli 健康检查失败：{exc}"
+        return health
     health["authOk"] = status.returncode == 0
     if status.returncode != 0:
         health["ok"] = False
-        health["error"] = (status.stdout or status.stderr or "lark-cli auth status --verify 未通过").strip()
+        health["error"] = cli_text(status) or "lark-cli auth status --verify 未通过。请执行 lark-cli auth login。"
     else:
         try:
             health["auth"] = parse_json_from_cli(status.stdout)
         except Exception:
-            health["auth"] = status.stdout.strip()
+            health["auth"] = (status.stdout or "").strip()
     return health
 
 
@@ -218,7 +231,7 @@ def download_feishu_media(token: str, out_dir: Path) -> str | None:
     if result.returncode != 0:
         return None
     try:
-        data = parse_json_from_cli(result.stdout or result.stderr)
+        data = parse_json_from_cli(cli_text(result))
         saved_path = Path(data["data"]["saved_path"])
     except Exception:
         matches = sorted(out_dir.glob(f"{token}.*"))
@@ -254,6 +267,9 @@ def replace_feishu_images(markdown: str, doc: str) -> str:
 def fetch_feishu_markdown(doc: str) -> str:
     if not doc.strip():
         raise RuntimeError("请提供飞书文档链接。")
+    health = lark_cli_health()
+    if not health.get("ok"):
+        raise RuntimeError(health.get("error") or "飞书导入环境未就绪，请先检查 lark-cli。")
     result = run_lark_cli(
         [
             "docs",
@@ -266,9 +282,9 @@ def fetch_feishu_markdown(doc: str) -> str:
         timeout=90,
     )
     if result.returncode != 0:
-        detail = result.stdout or result.stderr or "lark-cli docs +fetch 执行失败。"
+        detail = cli_text(result) or "lark-cli docs +fetch 执行失败。"
         raise RuntimeError(detail.strip())
-    data = parse_json_from_cli(result.stdout)
+    data = parse_json_from_cli(cli_text(result))
     if not data.get("ok"):
         raise RuntimeError(json.dumps(data.get("error", data), ensure_ascii=False))
     payload = data["data"]
@@ -883,7 +899,10 @@ class Handler(SimpleHTTPRequestHandler):
                 if not doc:
                     self.send_json(400, {"error": "请先粘贴飞书 docx 链接"})
                     return
-                self.send_json(200, {"markdown": fetch_feishu_markdown(doc)})
+                try:
+                    self.send_json(200, {"markdown": fetch_feishu_markdown(doc)})
+                except Exception as exc:
+                    self.send_json(500, {"error": str(exc), "diagnostics": {"larkCli": lark_cli_health()}})
                 return
 
             if self.path == "/api/export-card":
