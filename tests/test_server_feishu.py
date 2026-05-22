@@ -86,3 +86,20 @@ def test_extract_feishu_document_converts_html_payload_to_markdown_and_html():
     assert "**第一段**" in result["markdown"]
     assert "2. 第二项" in result["markdown"]
     assert "<strong>第一段</strong>" in result["html"]
+
+
+def test_rich_content_html_preserves_feishu_image_grid():
+    server = load_server_module()
+    result = server.rich_content_html(
+        '<grid><column width-ratio="0.5"><img src="left-token" name="left.jpg"/></column>'
+        '<column width-ratio="0.5"><img src="right-token" name="right.jpg"/></column></grid>',
+        "羊羊AI视频",
+    )
+    html = result["contentHtml"]
+
+    assert "display: table;" in html
+    assert html.count("display: table-cell") == 2
+    assert "width: 50.000%" in html
+    assert "width: 100%" in html
+    assert "border-spacing: 8px 0" in html
+    assert "data-feishu-grid-image" not in html

@@ -150,6 +150,21 @@ SAFE_HTML_ATTRS = {
 }
 
 
+def feishu_grid_style() -> str:
+    return (
+        "display: table; width: 100%; table-layout: fixed; "
+        "border-spacing: 8px 0; margin: 16px -4px 18px -4px"
+    )
+
+
+def feishu_column_style(width_ratio: str) -> str:
+    try:
+        width = max(0.15, min(float(width_ratio or "0.5"), 1.0)) * 100
+    except ValueError:
+        width = 50
+    return f"display: table-cell; width: {width:.3f}%; vertical-align: top"
+
+
 def sanitize_style(style: str) -> str:
     if not style:
         return ""
@@ -184,6 +199,8 @@ class RichHtmlSanitizer(HTMLParser):
         super().__init__(convert_charrefs=False)
         self.parts: list[str] = []
         self.skip_depth = 0
+        self.grid_depth = 0
+        self.column_depth = 0
 
     def html(self) -> str:
         return "".join(self.parts).strip()
@@ -192,6 +209,15 @@ class RichHtmlSanitizer(HTMLParser):
         tag = tag.lower()
         if tag in ("script", "style", "meta", "link", "title"):
             self.skip_depth += 1
+            return
+        if not self.skip_depth and tag == "grid":
+            self.grid_depth += 1
+            self.parts.append(f'<section style="{feishu_grid_style()}">')
+            return
+        if not self.skip_depth and tag == "column":
+            attrs_dict = {name.lower(): value or "" for name, value in attrs}
+            self.column_depth += 1
+            self.parts.append(f'<section style="{feishu_column_style(attrs_dict.get("width-ratio", ""))}">')
             return
         if self.skip_depth or tag not in SAFE_HTML_TAGS:
             return
@@ -208,6 +234,8 @@ class RichHtmlSanitizer(HTMLParser):
                 if not value:
                     continue
             cleaned.append(f'{name}="{sanitize_attr_value(value)}"')
+        if tag == "img" and self.column_depth:
+            cleaned.append('data-feishu-grid-image="1"')
         suffix = (" " + " ".join(cleaned)) if cleaned else ""
         self.parts.append(f"<{tag}{suffix}>")
 
@@ -221,6 +249,13 @@ class RichHtmlSanitizer(HTMLParser):
         if tag in ("script", "style", "meta", "link", "title"):
             if self.skip_depth:
                 self.skip_depth -= 1
+            return
+        if not self.skip_depth and tag in ("grid", "column"):
+            if tag == "grid" and self.grid_depth:
+                self.grid_depth -= 1
+            if tag == "column" and self.column_depth:
+                self.column_depth -= 1
+            self.parts.append("</section>")
             return
         if self.skip_depth or tag not in SAFE_HTML_TAGS or tag in ("br", "hr", "img"):
             return
@@ -288,14 +323,23 @@ def normalize_rich_html_layout(html: str, theme: dict) -> str:
         return append_inline_style(match.group(0), f"font-size: {h2_font_size}") if h2_font_size else match.group(0)
 
     def style_img(match: re.Match) -> str:
+        tag = match.group(0)
+        is_grid_image = 'data-feishu-grid-image="1"' in tag
         extra = ["display: inline-block", "max-width: 100%", "height: auto"]
+        if is_grid_image:
+            extra.extend([
+                "width: 100%",
+                "border-radius: 8px",
+                "box-shadow: rgba(20, 28, 38, 0.08) 0 4px 14px",
+            ])
         if image_margin:
-            extra.append(f"margin: {image_margin}")
-        return append_inline_style(match.group(0), "; ".join(extra))
+            extra.append("margin: 0" if is_grid_image else f"margin: {image_margin}")
+        return append_inline_style(tag, "; ".join(extra))
 
     html = re.sub(r"<p\b[^>]*>", style_p, html, flags=re.I)
     html = re.sub(r"<h[1-3]\b[^>]*>", style_heading, html, flags=re.I)
     html = re.sub(r"<img\b[^>]*>", style_img, html, flags=re.I)
+    html = html.replace(' data-feishu-grid-image="1"', "")
     return html
 
 
@@ -655,8 +699,8 @@ def fetch_feishu_document(doc: str) -> dict:
     if not health.get("ok"):
         raise RuntimeError(health.get("error") or "飞书导入环境未就绪，请先检查 lark-cli。")
     commands = [
-        ["docs", "+fetch", "--api-version", "v2", "--doc", doc.strip(), "--doc-format", "markdown", "--format", "json"],
         ["docs", "+fetch", "--api-version", "v2", "--doc", doc.strip(), "--format", "json"],
+        ["docs", "+fetch", "--api-version", "v2", "--doc", doc.strip(), "--doc-format", "markdown", "--format", "json"],
         ["docs", "+fetch", "--doc", doc.strip(), "--format", "json"],
     ]
     errors: list[str] = []
