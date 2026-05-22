@@ -120,7 +120,9 @@ def theme_for_account(account: str) -> dict:
     return base
 
 
-def convert_markdown(markdown: str, account: str) -> dict:
+def convert_markdown(markdown: str, account: str, preserve_paragraphs: bool = False) -> dict:
+    if preserve_paragraphs and "<!-- sentence-split: off -->" not in markdown:
+        markdown = f"<!-- sentence-split: off -->\n\n{markdown}"
     parsed = md2wechat.parse_markdown(markdown)
     if not parsed["title"]:
         parsed["title"] = "未命名文章"
@@ -158,7 +160,9 @@ def parse_json_from_cli(output: str | None) -> dict:
     start = output.find("{")
     if start == -1:
         raise RuntimeError(output.strip() or "lark-cli 没有返回 JSON。")
-    return json.loads(output[start:])
+    decoder = json.JSONDecoder()
+    data, _ = decoder.raw_decode(output[start:])
+    return data
 
 
 def run_lark_cli(args: list[str], timeout: int = 30) -> subprocess.CompletedProcess[str]:
@@ -284,6 +288,8 @@ def fetch_feishu_markdown(doc: str) -> str:
             "v2",
             "--doc",
             doc.strip(),
+            "--doc-format",
+            "markdown",
             "--format",
             "json",
         ],
@@ -957,7 +963,8 @@ class Handler(SimpleHTTPRequestHandler):
             if not markdown.strip():
                 self.send_json(400, {"error": "请先粘贴 Markdown 正文"})
                 return
-            self.send_json(200, convert_markdown(markdown, account))
+            preserve_paragraphs = bool(payload.get("preserveParagraphs"))
+            self.send_json(200, convert_markdown(markdown, account, preserve_paragraphs=preserve_paragraphs))
         except Exception as exc:  # pragma: no cover - surfaced in browser
             self.send_json(500, {"error": str(exc)})
 
