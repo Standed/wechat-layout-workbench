@@ -44,6 +44,11 @@ ACCOUNT_THEMES = {
         "primary_bg": "rgb(235, 246, 255)",
         "accent": "rgb(0, 209, 255)",
         "author": "羊羊",
+        "paragraph_font_size": "17px",
+        "paragraph_margin": "16px 0 0",
+        "preserve_paragraphs_default": True,
+        "h2_font_size": "22px",
+        "image_margin": "16px 0 0",
     },
     "西堂AI创业": {
         "primary": "rgb(113, 18, 151)",
@@ -151,6 +156,7 @@ def parse_markdown(md_text: str) -> dict:
 def md_to_html_body(md_body: str, theme: dict, preserve_paragraphs: bool = False) -> str:
     """将 Markdown 正文转为微信格式 HTML"""
     primary = theme["primary"]
+    preserve_paragraphs = preserve_paragraphs or bool(theme.get("preserve_paragraphs_default"))
     lines = md_body.split('\n')
     html_parts = []
     in_code_block = False
@@ -173,27 +179,32 @@ def md_to_html_body(md_body: str, theme: dict, preserve_paragraphs: bool = False
                 in_code_block = False
                 code_html = '<br/>'.join(escape_html(line) or '&nbsp;' for line in code_lines)
                 raw_label = (code_lang or '').strip()
-                code_label = escape_html('Terminal' if raw_label.lower() in ('', 'text', 'plain', 'plaintext') else raw_label)
+                generic_labels = {'', 'text', 'plain', 'plaintext', 'plain text'}
+                code_label = '' if raw_label.lower() in generic_labels else escape_html(raw_label)
+                label_html = (
+                    f'<span style="display: inline-block; margin-left: 10px; font-size: 13px; '
+                    f'color: rgb(190, 198, 210); font-family: Menlo, Monaco, Consolas, monospace; '
+                    f'line-height: 34px; letter-spacing: 0; vertical-align: top;">{code_label}</span>'
+                    if code_label
+                    else ''
+                )
                 html_parts.append(
-                    f'<section style="margin: 18px 0 20px 0; border-radius: 12px; overflow: hidden; '
-                    f'background-color: rgb(20, 21, 24); border: 1px solid rgb(39, 42, 48); '
-                    f'box-shadow: rgba(0, 0, 0, 0.20) 0 10px 28px;">'
-                    f'<section style="height: 38px; padding: 0 14px; background-color: rgb(36, 38, 43); '
-                    f'border-bottom: 1px solid rgb(50, 53, 60); box-sizing: border-box; '
-                    f'font-size: 0; line-height: 38px; white-space: nowrap;">'
-                    f'<span style="display: inline-block; font-size: 16px; line-height: 38px; '
-                    f'color: rgb(255, 95, 87); margin-right: 7px; vertical-align: top;">●</span>'
-                    f'<span style="display: inline-block; font-size: 16px; line-height: 38px; '
-                    f'color: rgb(255, 189, 46); margin-right: 7px; vertical-align: top;">●</span>'
-                    f'<span style="display: inline-block; font-size: 16px; line-height: 38px; '
-                    f'color: rgb(40, 201, 64); margin-right: 14px; vertical-align: top;">●</span>'
-                    f'<span style="display: inline-block; font-size: 13px; color: rgb(198, 202, 210); '
-                    f'font-family: Menlo, Monaco, Consolas, monospace; line-height: 38px; '
-                    f'letter-spacing: 0; vertical-align: top;">{code_label}</span>'
+                    f'<section style="margin: 18px 0 22px 0; border-radius: 8px; overflow: hidden; '
+                    f'background-color: rgb(36, 42, 51); border: 1px solid rgb(47, 55, 66); '
+                    f'box-shadow: rgba(20, 28, 38, 0.18) 0 8px 22px;">'
+                    f'<section style="height: 34px; padding: 0 16px; background-color: rgb(36, 42, 51); '
+                    f'box-sizing: border-box; font-size: 0; line-height: 34px; white-space: nowrap;">'
+                    f'<span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; '
+                    f'background-color: rgb(255, 95, 87); margin-right: 8px; vertical-align: middle;"></span>'
+                    f'<span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; '
+                    f'background-color: rgb(255, 189, 46); margin-right: 8px; vertical-align: middle;"></span>'
+                    f'<span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; '
+                    f'background-color: rgb(40, 201, 64); vertical-align: middle;"></span>'
+                    f'{label_html}'
                     f'</section>'
-                    f'<section style="padding: 17px 18px; background-color: rgb(20, 21, 24); '
-                    f'font-size: 13px; line-height: 1.9; color: rgb(245, 247, 250); '
-                    f'font-family: Menlo, Monaco, Consolas, monospace; word-break: break-all;">'
+                    f'<section style="padding: 14px 18px 18px 18px; background-color: rgb(36, 42, 51); '
+                    f'font-size: 13px; line-height: 1.9; color: rgb(238, 242, 247); '
+                    f'font-family: Menlo, Monaco, Consolas, monospace; word-break: break-word;">'
                     f'{code_html}</section></section>'
                 )
                 i += 1
@@ -242,9 +253,10 @@ def md_to_html_body(md_body: str, theme: dict, preserve_paragraphs: bool = False
         # ── h2 标题 ───────────────────────────
         if stripped.startswith('## '):
             heading_text = format_inline(stripped[3:].strip(), theme)
+            h2_font_size = theme.get("h2_font_size", "16.5px")
             html_parts.append(
                 f'<h3 style="margin: 35px 0 16px 0; padding: 0 0 0 8px; '
-                f'font-weight: bold; font-size: 16.5px; color: rgb(63, 63, 63); '
+                f'font-weight: bold; font-size: {h2_font_size}; color: rgb(63, 63, 63); '
                 f'border-left: 4px solid {primary}; line-height: 1.2; '
                 f'font-family: PingFang SC, system-ui, -apple-system, sans-serif;">'
                 f'{heading_text}</h3>'
@@ -387,8 +399,9 @@ def md_to_html_body(md_body: str, theme: dict, preserve_paragraphs: bool = False
 
         # ── 图片占位 [图片] ───────────────────
         if stripped == '[图片]':
+            image_margin = theme.get("image_margin", "0 0 16px 0")
             html_parts.append(
-                '<section style="margin: 0 0 16px 0; text-align: center;">'
+                f'<section style="margin: {image_margin}; text-align: center;">'
                 '<img data-placeholder="true" src="" style="display: inline-block; '
                 'max-width: 100%; height: auto; border-radius: 12px; '
                 'box-shadow: rgb(240, 240, 240) 0px 0px 0.5em 0px; '
@@ -413,19 +426,21 @@ def md_to_html_body(md_body: str, theme: dict, preserve_paragraphs: bool = False
                     match = re.match(r'^[-*]\s+(.+)$', current)
                 if not match:
                     break
-                items.append(match.group(1).strip())
+                marker = re.match(r'^(\d+)\.\s+', current).group(1) if is_ordered else '•'
+                items.append((marker, match.group(1).strip()))
                 j += 1
 
             item_html = []
-            for index, item in enumerate(items, start=1):
-                marker = str(index) if is_ordered else '•'
+            item_font_size = theme.get("paragraph_font_size", "15px")
+            for marker, item in items:
+                marker_text = f'{marker}.' if is_ordered else marker
                 item_html.append(
                     f'<section style="display: table; width: 100%; margin: 0 0 10px 0; '
-                    f'font-size: 15px; line-height: 2em; color: rgb(31, 35, 41); '
+                    f'font-size: {item_font_size}; line-height: 2em; color: rgb(31, 35, 41); '
                     f'font-family: PingFang SC, system-ui, -apple-system, BlinkMacSystemFont, '
                     f'Helvetica Neue, Arial, sans-serif;">'
                     f'<span style="display: table-cell; width: 30px; padding-right: 6px; '
-                    f'font-weight: bold; color: {primary}; vertical-align: top;">{marker}.</span>'
+                    f'font-weight: bold; color: {primary}; vertical-align: top;">{marker_text}</span>'
                     f'<span style="display: table-cell; vertical-align: top;">{format_inline(item, theme)}</span>'
                     f'</section>'
                 )
@@ -455,6 +470,7 @@ def md_to_html_body(md_body: str, theme: dict, preserve_paragraphs: bool = False
                 'border-radius: 12px; box-shadow: rgb(240, 240, 240) 0px 0px 0.5em 0px; '
                 'background-color: transparent;'
             )
+            image_margin = theme.get("image_margin", "0 0 16px 0")
             caption_html = ""
             if caption:
                 caption_html = (
@@ -465,14 +481,14 @@ def md_to_html_body(md_body: str, theme: dict, preserve_paragraphs: bool = False
                 )
             if re.match(r'^(https?://|data:image/)', image_src):
                 html_parts.append(
-                    '<section style="margin: 0 0 16px 0; text-align: center;">'
+                    f'<section style="margin: {image_margin}; text-align: center;">'
                     f'<img src="{escape_attr(image_src)}" style="{image_style}" alt="{alt_text}"/>'
                     f'{caption_html}'
                     '</section>'
                 )
             else:
                 html_parts.append(
-                    '<section style="margin: 0 0 16px 0; text-align: center;">'
+                    f'<section style="margin: {image_margin}; text-align: center;">'
                     f'<img data-local-src="{escape_attr(image_src)}" src="" style="{image_style}" alt="{alt_text}"/>'
                     f'{caption_html}'
                     '</section>'
@@ -548,12 +564,14 @@ def make_paragraph(content: str, indent: bool = False, theme: dict = None, prese
     当传入 theme 时，先分句再对每句应用 format_inline，避免 span 标签跨段落断裂。
     """
     padding = "padding-left: 1.5em; " if indent else ""
+    paragraph_font_size = theme.get("paragraph_font_size", "15px") if theme else "15px"
+    paragraph_margin = theme.get("paragraph_margin", "0 0 16px") if theme else "0 0 16px"
     p_style = (
-        f'font-size: 15px; line-height: 2em; '
+        f'font-size: {paragraph_font_size}; line-height: 2em; '
         f'font-family: PingFang SC, system-ui, -apple-system, BlinkMacSystemFont, '
         f'Helvetica Neue, Hiragino Sans GB, Microsoft YaHei UI, Microsoft YaHei, '
         f'Arial, sans-serif; color: rgb(31, 35, 41); '
-        f'margin: 0 0 16px; word-break: break-all; {padding}'
+        f'margin: {paragraph_margin}; word-break: break-all; {padding}'
         f'min-height: 20px;'
     )
 
@@ -591,9 +609,17 @@ def split_sentences(text: str) -> list:
         counter[0] += 1
         return key
 
-    # 保护 Markdown 加粗标记内容（***...*** 和 **...**），避免内部句号被拆分
+    # 保护 Markdown/飞书加粗标记内容，避免内部句号被拆分
     safe = re.sub(r'\*\*\*(.+?)\*\*\*', protect, text)
     safe = re.sub(r'\*\*(.+?)\*\*', protect, safe)
+    safe = re.sub(r'__(.+?)__', protect, safe)
+    safe = re.sub(r'<(?:strong|b)\b[^>]*>.*?</(?:strong|b)>', protect, safe, flags=re.I | re.S)
+    safe = re.sub(
+        r'<span\b(?=[^>]*font-weight\s*:\s*(?:bold|[6-9]00))[^>]*>.*?</span>',
+        protect,
+        safe,
+        flags=re.I | re.S,
+    )
     # 保护 HTML 标签
     safe = re.sub(r'<[^>]+>', protect, safe)
     # 保护中文引号内容
@@ -625,14 +651,56 @@ def split_sentences(text: str) -> list:
     return result
 
 
+def normalize_feishu_bold_html(text: str) -> str:
+    """将飞书/富文本常见粗体 HTML 归一成当前微信行内样式。"""
+    text = re.sub(
+        r'<(?:strong|b)\b[^>]*>(.*?)</(?:strong|b)>',
+        r'<span style="font-weight: bold;">\1</span>',
+        text,
+        flags=re.I | re.S,
+    )
+    text = re.sub(
+        r'<span\b(?=[^>]*font-weight\s*:\s*(?:bold|[6-9]00))[^>]*>(.*?)</span>',
+        r'<span style="font-weight: bold;">\1</span>',
+        text,
+        flags=re.I | re.S,
+    )
+    return text
+
+
+def protect_inline_code(text: str) -> tuple[str, dict]:
+    """临时保护行内代码，避免代码里的星号/下划线被当成强调。"""
+    protected = {}
+
+    def protect(match):
+        key = f'\x00CODE{len(protected)}\x00'
+        protected[key] = (
+            '<code style="font-size: 13px; padding: 2px 6px; '
+            'background-color: rgb(246, 246, 246); border-radius: 3px; '
+            'font-family: Menlo, Monaco, Consolas, monospace; '
+            f'color: rgb(51, 51, 51);">{match.group(1)}</code>'
+        )
+        return key
+
+    return re.sub(r'`([^`]+)`', protect, text), protected
+
+
+def restore_protected(text: str, protected: dict) -> str:
+    for key, val in protected.items():
+        text = text.replace(key, val)
+    return text
+
+
 def format_inline(text: str, theme: dict = None) -> str:
-    """处理行内 Markdown 格式：紫色加粗、黑色加粗、行内代码
+    """处理行内 Markdown/飞书格式：紫色加粗、黑色加粗、行内代码
 
     格式约定：
     - ***整句重要强调*** → 紫色加粗（用于整句非常重要的内容）
-    - **普通强调** → 黑色加粗（用于文中局部强调）
+    - **普通强调** / __普通强调__ / 飞书粗体 HTML → 黑色加粗
     """
     primary = theme["primary"] if theme else "rgb(113, 18, 151)"
+    text, protected_code = protect_inline_code(text)
+    text = normalize_feishu_bold_html(text)
 
     # 紫色加粗 ***text***（三星号，必须在双星号之前处理）
     text = re.sub(
@@ -646,16 +714,13 @@ def format_inline(text: str, theme: dict = None) -> str:
         r'<span style="font-weight: bold;">\1</span>',
         text
     )
-    # 行内代码 `code`
+    # 黑色加粗 __text__（飞书/部分 Markdown 导出会用下划线）
     text = re.sub(
-        r'`([^`]+)`',
-        r'<code style="font-size: 13px; padding: 2px 6px; '
-        r'background-color: rgb(246, 246, 246); border-radius: 3px; '
-        r'font-family: Menlo, Monaco, Consolas, monospace; '
-        r'color: rgb(51, 51, 51);">\1</code>',
+        r'__(.+?)__',
+        r'<span style="font-weight: bold;">\1</span>',
         text
     )
-    return text
+    return restore_protected(text, protected_code)
 
 
 def escape_html(text: str) -> str:

@@ -59,10 +59,12 @@ const el = {
 let lastContentHtml = "";
 let inputMode = "markdown";
 let lastMarkdown = "";
+let lastRichHtml = "";
 let coverTextTouched = false;
 let workbenchSettings = { accounts: {} };
 let activeSection = "compose";
 let sidebarCollapsed = window.localStorage.getItem("wechatLayoutSidebarCollapsed") === "true";
+const richPlaceholderText = el.richPaste.textContent.trim();
 
 function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
@@ -85,9 +87,48 @@ function textOf(node) {
   return normalizeText(node.textContent || "");
 }
 
+function isBoldNode(node) {
+  if (node.nodeType !== Node.ELEMENT_NODE) return false;
+  const tag = node.tagName.toLowerCase();
+  if (tag === "strong" || tag === "b") return true;
+  const fontWeight = String(node.style?.fontWeight || "").toLowerCase();
+  if (fontWeight === "bold" || Number(fontWeight) >= 600) return true;
+  const style = String(node.getAttribute("style") || "").toLowerCase();
+  return /font-weight\s*:\s*(bold|[6-9]00)/.test(style);
+}
+
+function inlineToMarkdown(node) {
+  if (node.nodeType === Node.TEXT_NODE) {
+    return (node.textContent || "").replace(/\u00a0/g, " ");
+  }
+  if (node.nodeType !== Node.ELEMENT_NODE) {
+    return "";
+  }
+
+  const tag = node.tagName.toLowerCase();
+  if (tag === "br") {
+    return "\n";
+  }
+  if (tag === "img") {
+    const src = node.getAttribute("src") || node.getAttribute("data-src") || node.getAttribute("data-original") || "";
+    if (!src) return "";
+    return `![${escapeMarkdown(node.getAttribute("alt") || "图片")}](${src})`;
+  }
+
+  const content = Array.from(node.childNodes).map(inlineToMarkdown).join("");
+  if (!content.trim()) return "";
+  if (tag === "code") return `\`${content}\``;
+  if (isBoldNode(node)) {
+    const leading = content.match(/^\s*/)?.[0] || "";
+    const trailing = content.match(/\s*$/)?.[0] || "";
+    return `${leading}**${content.trim()}**${trailing}`;
+  }
+  return content;
+}
+
 function tableToMarkdown(table) {
   const rows = Array.from(table.querySelectorAll("tr"))
-    .map((row) => Array.from(row.querySelectorAll("th,td")).map((cell) => textOf(cell).replace(/\|/g, "\\|")))
+    .map((row) => Array.from(row.querySelectorAll("th,td")).map((cell) => inlineToMarkdown(cell).trim().replace(/\|/g, "\\|")))
     .filter((row) => row.length);
   if (!rows.length) {
     return "";
@@ -135,7 +176,7 @@ function blockToMarkdown(node) {
   }
   if (/^h[1-6]$/.test(tag)) {
     const level = Math.min(Number(tag.slice(1)), 3);
-    return `${"#".repeat(level)} ${textOf(node)}`;
+    return `${"#".repeat(level)} ${inlineToMarkdown(node).trim()}`;
   }
   if (tag === "table") {
     return tableToMarkdown(node);
@@ -144,33 +185,94 @@ function blockToMarkdown(node) {
     return `\`\`\`\n${node.textContent.trim()}\n\`\`\``;
   }
   if (tag === "blockquote") {
-    return textOf(node)
+    return inlineToMarkdown(node).trim()
       .split("\n")
       .map((line) => `> ${line.trim()}`)
       .join("\n");
   }
   if (tag === "ul" || tag === "ol") {
+    const start = Number(node.getAttribute("start") || "1") || 1;
     return Array.from(node.children)
       .filter((child) => child.tagName && child.tagName.toLowerCase() === "li")
       .map((child, index) => {
-        const marker = tag === "ol" ? `${index + 1}.` : "-";
-        return `${marker} ${textOf(child)}`;
+        const explicitValue = Number(child.getAttribute("value"));
+        const value = Number.isFinite(explicitValue) && explicitValue > 0 ? explicitValue : start + index;
+        const marker = tag === "ol" ? `${value}.` : "-";
+        return `${marker} ${inlineToMarkdown(child).trim()}`;
       })
       .join("\n");
   }
 
+  if (isBoldNode(node)) {
+    return inlineToMarkdown(node).trim();
+  }
+
+  if (isInlineElement(node)) {
+    return inlineToMarkdown(node).trim();
+  }
+
   if (node.childNodes && node.childNodes.length) {
+    if (!hasBlockChildren(node)) {
+      return inlineToMarkdown(node).trim();
+    }
     const parts = Array.from(node.childNodes)
       .map(blockToMarkdown)
       .map((part) => part.trim())
       .filter(Boolean);
     if (parts.length) {
-      return mergeTextParts(parts).join("\n\n");
+      return parts.join("\n\n");
     }
   }
 
   const text = textOf(node);
   return text || "";
+}
+
+function isInlineElement(node) {
+  if (node.nodeType !== Node.ELEMENT_NODE) return false;
+  return new Set([
+    "a",
+    "abbr",
+    "b",
+    "code",
+    "em",
+    "i",
+    "label",
+    "small",
+    "span",
+    "strong",
+    "sub",
+    "sup",
+    "u",
+  ]).has(node.tagName.toLowerCase());
+}
+
+function isBlockElement(node) {
+  if (node.nodeType !== Node.ELEMENT_NODE) return false;
+  return new Set([
+    "article",
+    "aside",
+    "blockquote",
+    "div",
+    "figure",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "li",
+    "ol",
+    "p",
+    "pre",
+    "section",
+    "table",
+    "ul",
+  ]).has(node.tagName.toLowerCase());
+}
+
+function hasBlockChildren(node) {
+  return Array.from(node.childNodes).some(isBlockElement);
 }
 
 function mergeTextParts(parts) {
@@ -194,11 +296,27 @@ function mergeTextParts(parts) {
 }
 
 function richHtmlToMarkdown(container) {
-  const blocks = Array.from(container.childNodes)
-    .map(blockToMarkdown)
-    .map((part) => part.trim())
-    .filter(Boolean);
-  return mergeTextParts(blocks).join("\n\n");
+  const blocks = [];
+  let inlineBuffer = [];
+
+  const flushInlineBuffer = () => {
+    const markdown = inlineBuffer.map(inlineToMarkdown).join("").trim();
+    if (markdown) blocks.push(markdown);
+    inlineBuffer = [];
+  };
+
+  for (const node of Array.from(container.childNodes)) {
+    if (node.nodeType === Node.TEXT_NODE || isInlineElement(node)) {
+      inlineBuffer.push(node);
+      continue;
+    }
+    flushInlineBuffer();
+    const markdown = blockToMarkdown(node).trim();
+    if (markdown) blocks.push(markdown);
+  }
+  flushInlineBuffer();
+
+  return blocks.join("\n\n");
 }
 
 function currentMarkdown() {
@@ -206,6 +324,17 @@ function currentMarkdown() {
     return richHtmlToMarkdown(el.richPaste).trim();
   }
   return lastMarkdown || el.markdown.value.trim();
+}
+
+function currentRichHtml() {
+  if (inputMode !== "rich") {
+    return "";
+  }
+  const text = el.richPaste.textContent.trim();
+  if (!text || text === richPlaceholderText) {
+    return "";
+  }
+  return el.richPaste.innerHTML.trim();
 }
 
 function setMode(mode) {
@@ -353,18 +482,20 @@ async function resetAccountSettings() {
 }
 
 async function convert() {
+  const html = currentRichHtml();
   const markdown = inputMode === "rich" ? richHtmlToMarkdown(el.richPaste).trim() : el.markdown.value.trim();
-  if (!markdown) {
+  if (!markdown && !html) {
     setStatus(inputMode === "rich" ? "请先粘贴飞书富文本正文。" : "请先粘贴 Markdown 正文。", true);
     return;
   }
 
   setStatus("正在生成公众号排版...");
   lastMarkdown = markdown;
+  lastRichHtml = html;
   const response = await fetch("/api/convert", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ markdown, account: el.account.value }),
+    body: JSON.stringify({ markdown, html, account: el.account.value, preserveParagraphs: inputMode === "rich" }),
   });
   const data = await response.json();
   if (!response.ok) {
@@ -418,7 +549,14 @@ async function importFeishuDoc() {
       setImportStatus(message, "error");
       return;
     }
-    el.markdown.value = data.markdown;
+    el.markdown.value = data.markdown.includes("<!-- sentence-split: off -->")
+      ? data.markdown
+      : `<!-- sentence-split: off -->\n\n${data.markdown}`;
+    if (data.html) {
+      setMode("rich");
+      el.richPaste.innerHTML = data.html;
+      lastRichHtml = data.html;
+    }
     await convert();
     setStatus("飞书文档已导入，图片已尽量下载成本地文件。现在可以直接复制公众号富文本。");
     setImportStatus("导入完成，正文已写入 Markdown 区并生成预览。", "success");
