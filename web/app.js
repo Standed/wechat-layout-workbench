@@ -59,10 +59,12 @@ const el = {
 let lastContentHtml = "";
 let inputMode = "markdown";
 let lastMarkdown = "";
+let lastRichHtml = "";
 let coverTextTouched = false;
 let workbenchSettings = { accounts: {} };
 let activeSection = "compose";
 let sidebarCollapsed = window.localStorage.getItem("wechatLayoutSidebarCollapsed") === "true";
+const richPlaceholderText = el.richPaste.textContent.trim();
 
 function fileToDataUrl(file) {
   return new Promise((resolve, reject) => {
@@ -324,6 +326,17 @@ function currentMarkdown() {
   return lastMarkdown || el.markdown.value.trim();
 }
 
+function currentRichHtml() {
+  if (inputMode !== "rich") {
+    return "";
+  }
+  const text = el.richPaste.textContent.trim();
+  if (!text || text === richPlaceholderText) {
+    return "";
+  }
+  return el.richPaste.innerHTML.trim();
+}
+
 function setMode(mode) {
   inputMode = mode;
   const isMarkdown = mode === "markdown";
@@ -469,18 +482,20 @@ async function resetAccountSettings() {
 }
 
 async function convert() {
+  const html = currentRichHtml();
   const markdown = inputMode === "rich" ? richHtmlToMarkdown(el.richPaste).trim() : el.markdown.value.trim();
-  if (!markdown) {
+  if (!markdown && !html) {
     setStatus(inputMode === "rich" ? "请先粘贴飞书富文本正文。" : "请先粘贴 Markdown 正文。", true);
     return;
   }
 
   setStatus("正在生成公众号排版...");
   lastMarkdown = markdown;
+  lastRichHtml = html;
   const response = await fetch("/api/convert", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ markdown, account: el.account.value, preserveParagraphs: inputMode === "rich" }),
+    body: JSON.stringify({ markdown, html, account: el.account.value, preserveParagraphs: inputMode === "rich" }),
   });
   const data = await response.json();
   if (!response.ok) {
@@ -537,6 +552,11 @@ async function importFeishuDoc() {
     el.markdown.value = data.markdown.includes("<!-- sentence-split: off -->")
       ? data.markdown
       : `<!-- sentence-split: off -->\n\n${data.markdown}`;
+    if (data.html) {
+      setMode("rich");
+      el.richPaste.innerHTML = data.html;
+      lastRichHtml = data.html;
+    }
     await convert();
     setStatus("飞书文档已导入，图片已尽量下载成本地文件。现在可以直接复制公众号富文本。");
     setImportStatus("导入完成，正文已写入 Markdown 区并生成预览。", "success");

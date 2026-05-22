@@ -14,6 +14,7 @@ import time
 import urllib.error
 import urllib.request
 from base64 import b64decode
+from html import unescape
 from html.parser import HTMLParser
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -136,6 +137,192 @@ def convert_markdown(markdown: str, account: str, preserve_paragraphs: bool = Fa
     }
 
 
+SAFE_HTML_TAGS = {
+    "a", "b", "blockquote", "br", "code", "del", "div", "em", "figcaption", "figure",
+    "h1", "h2", "h3", "h4", "h5", "h6", "hr", "i", "img", "li", "ol", "p", "pre",
+    "s", "section", "span", "strong", "sub", "sup", "table", "tbody", "td", "th",
+    "thead", "tr", "u", "ul",
+}
+
+SAFE_HTML_ATTRS = {
+    "alt", "class", "colspan", "data-local-src", "height", "href", "name", "rowspan",
+    "src", "style", "target", "title", "width",
+}
+
+
+def sanitize_style(style: str) -> str:
+    if not style:
+        return ""
+    chunks = []
+    for raw in style.split(";"):
+        if ":" not in raw:
+            continue
+        name, value = raw.split(":", 1)
+        name = name.strip().lower()
+        value = value.strip()
+        lowered = value.lower()
+        if not name or "expression" in lowered or "javascript:" in lowered:
+            continue
+        if "url(" in lowered and not re.search(r"url\(['\"]?data:image/", lowered):
+            continue
+        chunks.append(f"{name}: {value}")
+    return "; ".join(chunks)
+
+
+def sanitize_attr_value(value: str) -> str:
+    return (
+        (value or "")
+        .replace("&", "&amp;")
+        .replace('"', "&quot;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+class RichHtmlSanitizer(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=False)
+        self.parts: list[str] = []
+        self.skip_depth = 0
+
+    def html(self) -> str:
+        return "".join(self.parts).strip()
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        if tag in ("script", "style", "meta", "link", "title"):
+            self.skip_depth += 1
+            return
+        if self.skip_depth or tag not in SAFE_HTML_TAGS:
+            return
+        cleaned = []
+        for name, value in attrs:
+            name = name.lower()
+            if name.startswith("on") or name not in SAFE_HTML_ATTRS:
+                continue
+            value = value or ""
+            if name in ("href", "src") and re.match(r"^\s*javascript:", value, flags=re.I):
+                continue
+            if name == "style":
+                value = sanitize_style(value)
+                if not value:
+                    continue
+            cleaned.append(f'{name}="{sanitize_attr_value(value)}"')
+        suffix = (" " + " ".join(cleaned)) if cleaned else ""
+        self.parts.append(f"<{tag}{suffix}>")
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.handle_starttag(tag, attrs)
+        if tag.lower() not in ("br", "hr", "img"):
+            self.handle_endtag(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag in ("script", "style", "meta", "link", "title"):
+            if self.skip_depth:
+                self.skip_depth -= 1
+            return
+        if self.skip_depth or tag not in SAFE_HTML_TAGS or tag in ("br", "hr", "img"):
+            return
+        self.parts.append(f"</{tag}>")
+
+    def handle_data(self, data: str) -> None:
+        if not self.skip_depth:
+            self.parts.append(data)
+
+    def handle_entityref(self, name: str) -> None:
+        if not self.skip_depth:
+            self.parts.append(f"&{name};")
+
+    def handle_charref(self, name: str) -> None:
+        if not self.skip_depth:
+            self.parts.append(f"&#{name};")
+
+
+def sanitize_rich_html(html: str) -> str:
+    parser = RichHtmlSanitizer()
+    parser.feed(html or "")
+    parser.close()
+    return parser.html()
+
+
+def title_from_rich_html(html: str) -> str:
+    for pattern in (r"<title[^>]*>(.*?)</title>", r"<h1[^>]*>(.*?)</h1>", r"<h2[^>]*>(.*?)</h2>"):
+        match = re.search(pattern, html or "", flags=re.I | re.S)
+        if match:
+            title = re.sub(r"<[^>]+>", "", match.group(1))
+            title = unescape(re.sub(r"\s+", " ", title)).strip()
+            if title:
+                return title
+    return "未命名文章"
+
+
+def append_inline_style(tag: str, extra_style: str) -> str:
+    match = re.search(r'\sstyle="([^"]*)"', tag, flags=re.I)
+    if match:
+        style = sanitize_style(f"{match.group(1)}; {extra_style}")
+        return tag[: match.start(1)] + sanitize_attr_value(style) + tag[match.end(1) :]
+    suffix = "/>" if tag.endswith("/>") else ">"
+    base = tag[:-2] if suffix == "/>" else tag[:-1]
+    return base + f' style="{sanitize_attr_value(sanitize_style(extra_style))}"{suffix}'
+
+
+def normalize_rich_html_layout(html: str, theme: dict) -> str:
+    paragraph_font_size = theme.get("paragraph_font_size")
+    paragraph_margin = theme.get("paragraph_margin")
+    h2_font_size = theme.get("h2_font_size")
+    image_margin = theme.get("image_margin")
+    if not any((paragraph_font_size, paragraph_margin, h2_font_size, image_margin)):
+        return html
+
+    def style_p(match: re.Match) -> str:
+        extra = []
+        if paragraph_font_size:
+            extra.append(f"font-size: {paragraph_font_size}")
+        extra.append("line-height: 2em")
+        if paragraph_margin:
+            extra.append(f"margin: {paragraph_margin}")
+        return append_inline_style(match.group(0), "; ".join(extra))
+
+    def style_heading(match: re.Match) -> str:
+        return append_inline_style(match.group(0), f"font-size: {h2_font_size}") if h2_font_size else match.group(0)
+
+    def style_img(match: re.Match) -> str:
+        extra = ["display: inline-block", "max-width: 100%", "height: auto"]
+        if image_margin:
+            extra.append(f"margin: {image_margin}")
+        return append_inline_style(match.group(0), "; ".join(extra))
+
+    html = re.sub(r"<p\b[^>]*>", style_p, html, flags=re.I)
+    html = re.sub(r"<h[1-3]\b[^>]*>", style_heading, html, flags=re.I)
+    html = re.sub(r"<img\b[^>]*>", style_img, html, flags=re.I)
+    return html
+
+
+def rich_content_html(raw_html: str, account: str) -> dict:
+    theme = theme_for_account(account)
+    clean_html = sanitize_rich_html(raw_html)
+    if not clean_html:
+        raise RuntimeError("请先粘贴富文本正文。")
+    clean_html = normalize_rich_html_layout(clean_html, theme)
+    paragraph_font_size = theme.get("paragraph_font_size", "15px")
+    header = md2wechat.build_header(theme)
+    footer = md2wechat.build_footer(theme, theme["author"], [])
+    content_html = (
+        f'<section style="font-size: {paragraph_font_size}; line-height: 1.8; color: rgb(51, 51, 51); '
+        'font-family: -apple-system, BlinkMacSystemFont, Helvetica Neue, PingFang SC, '
+        'Hiragino Sans GB, Microsoft YaHei, Arial, sans-serif; '
+        'word-break: break-word; margin-bottom: 16px;">'
+        f"{header}{clean_html}{footer}</section>"
+    )
+    return {
+        "title": title_from_rich_html(raw_html),
+        "account": account,
+        "contentHtml": content_html,
+        "fullHtml": content_html,
+    }
+
+
 def feishu_doc_id(doc: str) -> str:
     match = re.search(r"/(?:docx|docs|wiki)/([A-Za-z0-9]+)", doc)
     if match:
@@ -156,13 +343,21 @@ def normalize_lark_error(text: str) -> str:
 
 
 def parse_json_from_cli(output: str | None) -> dict:
-    output = output or ""
-    start = output.find("{")
-    if start == -1:
-        raise RuntimeError(output.strip() or "lark-cli 没有返回 JSON。")
+    output = (output or "").strip()
     decoder = json.JSONDecoder()
-    data, _ = decoder.raw_decode(output[start:])
-    return data
+    last_error = None
+    for index, char in enumerate(output):
+        if char not in "{[":
+            continue
+        try:
+            data, _ = decoder.raw_decode(output[index:])
+            return data
+        except json.JSONDecodeError as exc:
+            last_error = exc
+    if last_error:
+        preview = output[:1200].strip()
+        raise RuntimeError(f"lark-cli 返回的 JSON 无法解析：{last_error.msg}。输出片段：{preview}") from last_error
+    raise RuntimeError(output.strip() or "lark-cli 没有返回 JSON。")
 
 
 def run_lark_cli(args: list[str], timeout: int = 30) -> subprocess.CompletedProcess[str]:
@@ -176,10 +371,13 @@ def run_lark_cli(args: list[str], timeout: int = 30) -> subprocess.CompletedProc
         [executable, *args],
         cwd=str(ROOT),
         text=True,
+        encoding="utf-8",
+        errors="replace",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         timeout=timeout,
         check=False,
+        env={**os.environ, "NO_COLOR": "1"},
     )
 
 
@@ -195,6 +393,8 @@ def lark_cli_health() -> dict:
     version = subprocess.run(
         [executable, "--version"],
         text=True,
+        encoding="utf-8",
+        errors="replace",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         timeout=10,
@@ -274,41 +474,207 @@ def replace_feishu_images(markdown: str, doc: str) -> str:
     return re.sub(r"<image\s+[^>]*?/>", repl, markdown)
 
 
+def localize_feishu_html_images(html: str, doc: str) -> str:
+    out_dir = ROOT / "output" / "_feishu_media" / feishu_doc_id(doc)
+
+    def repl(match: re.Match) -> str:
+        attrs = match.group(1)
+        src_match = re.search(r'\bsrc="([^"]+)"', attrs)
+        token = src_match.group(1) if src_match else ""
+        media_path = download_feishu_media(token, out_dir) if token and not token.startswith(("http://", "https://", "data:")) else None
+        if media_path:
+            attrs = re.sub(r'\ssrc="[^"]*"', "", attrs)
+            attrs = re.sub(r'\sdata-local-src="[^"]*"', "", attrs)
+            return f'<img{attrs} data-local-src="{sanitize_attr_value(media_path)}" src=""/>'
+        href_match = re.search(r'\bhref="([^"]+)"', attrs)
+        if href_match and (not src_match or not src_match.group(1).startswith(("http://", "https://", "data:"))):
+            attrs = re.sub(r'\ssrc="[^"]*"', f' src="{sanitize_attr_value(href_match.group(1))}"', attrs)
+        return f"<img{attrs}/>"
+
+    return re.sub(r"<img\b([^>]*)/?>", repl, html or "", flags=re.I)
+
+
+def clean_inline_text(text: str) -> str:
+    text = re.sub(r"\s+", " ", unescape(text or "")).strip()
+    return text.replace("[", "\\[").replace("]", "\\]") or "飞书图片"
+
+
+class FeishuHtmlMarkdownParser(HTMLParser):
+    def __init__(self, doc: str):
+        super().__init__(convert_charrefs=True)
+        self.out_dir = ROOT / "output" / "_feishu_media" / feishu_doc_id(doc)
+        self.parts: list[str] = []
+        self.stack: list[str] = []
+        self.link_stack: list[str] = []
+        self.ordered_stack: list[int] = []
+        self.code_depth = 0
+
+    def text(self) -> str:
+        text = "".join(self.parts)
+        text = unescape(text)
+        text = re.sub(r"[ \t]+\n", "\n", text)
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
+    def append(self, value: str) -> None:
+        if value:
+            self.parts.append(value)
+
+    def ensure_block(self) -> None:
+        current = "".join(self.parts)
+        if current and not current.endswith("\n\n"):
+            self.append("\n" if current.endswith("\n") else "\n\n")
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attrs_dict = {name.lower(): value or "" for name, value in attrs}
+        tag = tag.lower()
+        self.stack.append(tag)
+        if tag in ("title", "p", "div"):
+            self.ensure_block()
+            if tag == "title":
+                self.append("# ")
+        elif tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            self.ensure_block()
+            level = min(int(tag[1]), 3)
+            self.append("#" * level + " ")
+        elif tag == "br":
+            self.append("\n")
+        elif tag in ("strong", "b"):
+            self.append("**")
+        elif tag in ("em", "i"):
+            self.append("*")
+        elif tag == "pre":
+            self.ensure_block()
+            lang = attrs_dict.get("lang") or attrs_dict.get("data-lang") or ""
+            self.append(f"```{lang}\n")
+        elif tag == "code" and "pre" not in self.stack[:-1]:
+            self.code_depth += 1
+            self.append("`")
+        elif tag == "ol":
+            start = int(attrs_dict.get("start") or "1") if (attrs_dict.get("start") or "1").isdigit() else 1
+            self.ordered_stack.append(start)
+        elif tag == "li":
+            self.ensure_block()
+            if self.ordered_stack:
+                value = attrs_dict.get("value")
+                marker = int(value) if value and value.isdigit() else self.ordered_stack[-1]
+                self.ordered_stack[-1] = marker + 1
+                self.append(f"{marker}. ")
+            else:
+                self.append("- ")
+        elif tag == "blockquote":
+            self.ensure_block()
+            self.append("> ")
+        elif tag == "a":
+            self.link_stack.append(attrs_dict.get("href", ""))
+            self.append("[")
+        elif tag == "img":
+            self.ensure_block()
+            src = attrs_dict.get("src", "").strip()
+            href = attrs_dict.get("href", "").strip()
+            name = attrs_dict.get("caption") or attrs_dict.get("name") or attrs_dict.get("alt") or "飞书图片"
+            media_path = download_feishu_media(src, self.out_dir) if src and not src.startswith(("http://", "https://", "data:")) else None
+            image_src = media_path or href or src
+            self.append(f"![{clean_inline_text(name)}]({image_src})" if image_src else "> 飞书图片暂时无法下载")
+            self.ensure_block()
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag in ("title", "p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote"):
+            self.ensure_block()
+        elif tag in ("strong", "b"):
+            self.append("**")
+        elif tag in ("em", "i"):
+            self.append("*")
+        elif tag == "pre":
+            self.append("\n```\n\n")
+        elif tag == "code" and self.code_depth:
+            self.code_depth -= 1
+            self.append("`")
+        elif tag == "a":
+            href = self.link_stack.pop() if self.link_stack else ""
+            self.append(f"]({href})" if href else "]")
+        elif tag == "ol" and self.ordered_stack:
+            self.ordered_stack.pop()
+        if tag in self.stack:
+            self.stack.remove(tag)
+
+    def handle_data(self, data: str) -> None:
+        if not data:
+            return
+        if self.code_depth or "pre" in self.stack:
+            self.append(data.replace("<br/>", "\n"))
+            return
+        text = data.replace("\ufeff", "")
+        if text.strip():
+            self.append(re.sub(r"\s+", " ", text))
+
+
+def feishu_html_to_markdown(html: str, doc: str) -> str:
+    parser = FeishuHtmlMarkdownParser(doc)
+    parser.feed(html)
+    parser.close()
+    return parser.text()
+
+
+def extract_feishu_markdown(payload: dict, doc: str) -> str:
+    markdown = payload.get("markdown") or ""
+    document = payload.get("document") or {}
+    content = document.get("content") or ""
+    title = (payload.get("title") or document.get("title") or "").strip()
+    if not markdown and content:
+        if re.search(r"</?(title|p|h[1-6]|img|pre|ul|ol|li|table|blockquote)\b", content, flags=re.I):
+            markdown = feishu_html_to_markdown(content, doc)
+        else:
+            markdown = content
+    if not markdown:
+        raise RuntimeError("飞书返回为空，可能没有文档权限或文档格式暂不支持。")
+    if title and not re.search(r"^\s*#\s+", markdown, flags=re.MULTILINE):
+        markdown = f"# {title}\n\n{markdown}"
+    return replace_feishu_images(markdown, doc)
+
+
+def extract_feishu_document(payload: dict, doc: str) -> dict:
+    document = payload.get("document") or {}
+    content = document.get("content") or ""
+    markdown = extract_feishu_markdown(payload, doc)
+    html = ""
+    if content and re.search(r"</?(title|p|h[1-6]|img|pre|ul|ol|li|table|blockquote|span)\b", content, flags=re.I):
+        html = localize_feishu_html_images(content, doc)
+    return {"markdown": markdown, "html": html}
+
+
 def fetch_feishu_markdown(doc: str) -> str:
+    return fetch_feishu_document(doc)["markdown"]
+
+
+def fetch_feishu_document(doc: str) -> dict:
     if not doc.strip():
         raise RuntimeError("请提供飞书文档链接。")
     health = lark_cli_health()
     if not health.get("ok"):
         raise RuntimeError(health.get("error") or "飞书导入环境未就绪，请先检查 lark-cli。")
-    result = run_lark_cli(
-        [
-            "docs",
-            "+fetch",
-            "--api-version",
-            "v2",
-            "--doc",
-            doc.strip(),
-            "--doc-format",
-            "markdown",
-            "--format",
-            "json",
-        ],
-        timeout=90,
-    )
+    commands = [
+        ["docs", "+fetch", "--api-version", "v2", "--doc", doc.strip(), "--doc-format", "markdown", "--format", "json"],
+        ["docs", "+fetch", "--api-version", "v2", "--doc", doc.strip(), "--format", "json"],
+        ["docs", "+fetch", "--doc", doc.strip(), "--format", "json"],
+    ]
+    errors: list[str] = []
+    result = None
+    for command in commands:
+        result = run_lark_cli(command, timeout=90)
+        if result.returncode == 0:
+            break
+        errors.append(normalize_lark_error(cli_text(result) or "lark-cli docs +fetch 执行失败。"))
+    if result is None:
+        raise RuntimeError("lark-cli docs +fetch 未执行。")
     if result.returncode != 0:
-        detail = normalize_lark_error(cli_text(result) or "lark-cli docs +fetch 执行失败。")
+        detail = "\n\n".join(error.strip() for error in errors if error.strip())
         raise RuntimeError(detail.strip())
     data = parse_json_from_cli(cli_text(result))
     if not data.get("ok"):
         raise RuntimeError(json.dumps(data.get("error", data), ensure_ascii=False))
-    payload = data["data"]
-    markdown = payload.get("markdown") or payload.get("document", {}).get("content") or ""
-    if not markdown:
-        raise RuntimeError("飞书返回为空，可能没有文档权限或文档格式暂不支持。")
-    title = (payload.get("title") or payload.get("document", {}).get("title") or "").strip()
-    if title and not re.search(r"^\s*#\s+", markdown, flags=re.MULTILINE):
-        markdown = f"# {title}\n\n{markdown}"
-    return replace_feishu_images(markdown, doc)
+    return extract_feishu_document(data["data"], doc)
 
 
 def safe_slug(text: str) -> str:
@@ -914,7 +1280,7 @@ class Handler(SimpleHTTPRequestHandler):
                     self.send_json(400, {"error": "请先粘贴飞书 docx 链接"})
                     return
                 try:
-                    self.send_json(200, {"markdown": fetch_feishu_markdown(doc)})
+                    self.send_json(200, fetch_feishu_document(doc))
                 except Exception as exc:
                     self.send_json(500, {"error": str(exc), "diagnostics": {"larkCli": lark_cli_health()}})
                 return
@@ -958,8 +1324,12 @@ class Handler(SimpleHTTPRequestHandler):
                 self.send_json(200, generate_cover(title, account, cover_text, visual_hammer, article_text))
                 return
 
-            markdown = payload.get("markdown", "")
             account = payload.get("account", md2wechat.DEFAULT_ACCOUNT)
+            html = payload.get("html", "")
+            if html.strip():
+                self.send_json(200, rich_content_html(html, account))
+                return
+            markdown = payload.get("markdown", "")
             if not markdown.strip():
                 self.send_json(400, {"error": "请先粘贴 Markdown 正文"})
                 return

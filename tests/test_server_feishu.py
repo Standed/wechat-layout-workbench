@@ -51,3 +51,38 @@ def test_convert_markdown_can_preserve_feishu_paragraphs_and_bold():
     assert html.count("第一段。不要被拆。") == 1
     assert ">2.</span>" in html
     assert '<span style="font-weight: bold;">第二段加粗序号</span>' in html
+
+
+def test_rich_content_html_sanitizes_and_preserves_inline_styles():
+    server = load_server_module()
+    result = server.rich_content_html(
+        '<h1>富文本标题</h1><p onclick="bad()"><span style="color: rgb(255, 0, 0); font-weight: 700;">红色加粗</span>'
+        '<script>alert(1)</script><a href="javascript:alert(2)">坏链接</a></p>',
+        "羊羊AI视频",
+    )
+    html = result["contentHtml"]
+
+    assert result["title"] == "富文本标题"
+    assert "font-size: 17px" in html
+    assert "font-size: 22px" in html
+    assert "color: rgb(255, 0, 0)" in html
+    assert "font-weight: 700" in html
+    assert "onclick" not in html
+    assert "script" not in html
+    assert "javascript:" not in html
+
+
+def test_extract_feishu_document_converts_html_payload_to_markdown_and_html():
+    server = load_server_module()
+    payload = {
+        "document": {
+            "title": "飞书标题",
+            "content": '<h1>飞书标题</h1><p><strong>第一段</strong></p><ol start="2"><li>第二项</li></ol>',
+        }
+    }
+    result = server.extract_feishu_document(payload, "https://example.feishu.cn/docx/AbCd")
+
+    assert "# 飞书标题" in result["markdown"]
+    assert "**第一段**" in result["markdown"]
+    assert "2. 第二项" in result["markdown"]
+    assert "<strong>第一段</strong>" in result["html"]

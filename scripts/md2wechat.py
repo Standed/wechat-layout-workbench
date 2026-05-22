@@ -44,6 +44,11 @@ ACCOUNT_THEMES = {
         "primary_bg": "rgb(235, 246, 255)",
         "accent": "rgb(0, 209, 255)",
         "author": "羊羊",
+        "paragraph_font_size": "17px",
+        "paragraph_margin": "16px 0 0",
+        "preserve_paragraphs_default": True,
+        "h2_font_size": "22px",
+        "image_margin": "16px 0 0",
     },
     "西堂AI创业": {
         "primary": "rgb(113, 18, 151)",
@@ -151,6 +156,7 @@ def parse_markdown(md_text: str) -> dict:
 def md_to_html_body(md_body: str, theme: dict, preserve_paragraphs: bool = False) -> str:
     """将 Markdown 正文转为微信格式 HTML"""
     primary = theme["primary"]
+    preserve_paragraphs = preserve_paragraphs or bool(theme.get("preserve_paragraphs_default"))
     lines = md_body.split('\n')
     html_parts = []
     in_code_block = False
@@ -247,9 +253,10 @@ def md_to_html_body(md_body: str, theme: dict, preserve_paragraphs: bool = False
         # ── h2 标题 ───────────────────────────
         if stripped.startswith('## '):
             heading_text = format_inline(stripped[3:].strip(), theme)
+            h2_font_size = theme.get("h2_font_size", "16.5px")
             html_parts.append(
                 f'<h3 style="margin: 35px 0 16px 0; padding: 0 0 0 8px; '
-                f'font-weight: bold; font-size: 16.5px; color: rgb(63, 63, 63); '
+                f'font-weight: bold; font-size: {h2_font_size}; color: rgb(63, 63, 63); '
                 f'border-left: 4px solid {primary}; line-height: 1.2; '
                 f'font-family: PingFang SC, system-ui, -apple-system, sans-serif;">'
                 f'{heading_text}</h3>'
@@ -392,8 +399,9 @@ def md_to_html_body(md_body: str, theme: dict, preserve_paragraphs: bool = False
 
         # ── 图片占位 [图片] ───────────────────
         if stripped == '[图片]':
+            image_margin = theme.get("image_margin", "0 0 16px 0")
             html_parts.append(
-                '<section style="margin: 0 0 16px 0; text-align: center;">'
+                f'<section style="margin: {image_margin}; text-align: center;">'
                 '<img data-placeholder="true" src="" style="display: inline-block; '
                 'max-width: 100%; height: auto; border-radius: 12px; '
                 'box-shadow: rgb(240, 240, 240) 0px 0px 0.5em 0px; '
@@ -423,11 +431,12 @@ def md_to_html_body(md_body: str, theme: dict, preserve_paragraphs: bool = False
                 j += 1
 
             item_html = []
+            item_font_size = theme.get("paragraph_font_size", "15px")
             for marker, item in items:
                 marker_text = f'{marker}.' if is_ordered else marker
                 item_html.append(
                     f'<section style="display: table; width: 100%; margin: 0 0 10px 0; '
-                    f'font-size: 15px; line-height: 2em; color: rgb(31, 35, 41); '
+                    f'font-size: {item_font_size}; line-height: 2em; color: rgb(31, 35, 41); '
                     f'font-family: PingFang SC, system-ui, -apple-system, BlinkMacSystemFont, '
                     f'Helvetica Neue, Arial, sans-serif;">'
                     f'<span style="display: table-cell; width: 30px; padding-right: 6px; '
@@ -461,6 +470,7 @@ def md_to_html_body(md_body: str, theme: dict, preserve_paragraphs: bool = False
                 'border-radius: 12px; box-shadow: rgb(240, 240, 240) 0px 0px 0.5em 0px; '
                 'background-color: transparent;'
             )
+            image_margin = theme.get("image_margin", "0 0 16px 0")
             caption_html = ""
             if caption:
                 caption_html = (
@@ -471,14 +481,14 @@ def md_to_html_body(md_body: str, theme: dict, preserve_paragraphs: bool = False
                 )
             if re.match(r'^(https?://|data:image/)', image_src):
                 html_parts.append(
-                    '<section style="margin: 0 0 16px 0; text-align: center;">'
+                    f'<section style="margin: {image_margin}; text-align: center;">'
                     f'<img src="{escape_attr(image_src)}" style="{image_style}" alt="{alt_text}"/>'
                     f'{caption_html}'
                     '</section>'
                 )
             else:
                 html_parts.append(
-                    '<section style="margin: 0 0 16px 0; text-align: center;">'
+                    f'<section style="margin: {image_margin}; text-align: center;">'
                     f'<img data-local-src="{escape_attr(image_src)}" src="" style="{image_style}" alt="{alt_text}"/>'
                     f'{caption_html}'
                     '</section>'
@@ -554,12 +564,14 @@ def make_paragraph(content: str, indent: bool = False, theme: dict = None, prese
     当传入 theme 时，先分句再对每句应用 format_inline，避免 span 标签跨段落断裂。
     """
     padding = "padding-left: 1.5em; " if indent else ""
+    paragraph_font_size = theme.get("paragraph_font_size", "15px") if theme else "15px"
+    paragraph_margin = theme.get("paragraph_margin", "0 0 16px") if theme else "0 0 16px"
     p_style = (
-        f'font-size: 15px; line-height: 2em; '
+        f'font-size: {paragraph_font_size}; line-height: 2em; '
         f'font-family: PingFang SC, system-ui, -apple-system, BlinkMacSystemFont, '
         f'Helvetica Neue, Hiragino Sans GB, Microsoft YaHei UI, Microsoft YaHei, '
         f'Arial, sans-serif; color: rgb(31, 35, 41); '
-        f'margin: 0 0 16px; word-break: break-all; {padding}'
+        f'margin: {paragraph_margin}; word-break: break-all; {padding}'
         f'min-height: 20px;'
     )
 
