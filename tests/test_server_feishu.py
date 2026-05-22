@@ -85,21 +85,21 @@ def test_extract_feishu_document_converts_html_payload_to_markdown_and_html():
     assert "# 飞书标题" in result["markdown"]
     assert "**第一段**" in result["markdown"]
     assert "2. 第二项" in result["markdown"]
-    assert "<strong>第一段</strong>" in result["html"]
+    assert result["html"] == ""
 
 
-def test_rich_content_html_preserves_feishu_image_grid():
+def test_extract_feishu_document_preserves_image_grid_in_markdown():
     server = load_server_module()
-    result = server.rich_content_html(
-        '<grid><column width-ratio="0.5"><img src="left-token" name="left.jpg"/></column>'
-        '<column width-ratio="0.5"><img src="right-token" name="right.jpg"/></column></grid>',
-        "羊羊AI视频",
-    )
-    html = result["contentHtml"]
+    payload = {
+        "document": {
+            "title": "飞书标题",
+            "content": '<grid><column width-ratio="0.5"><img src="left.jpg" name="left.jpg"/></column>'
+            '<column width-ratio="0.5"><img src="right.jpg" name="right.jpg"/></column></grid>',
+        }
+    }
+    result = server.extract_feishu_document(payload, "https://example.feishu.cn/docx/AbCd")
+    markdown = result["markdown"]
 
-    assert "display: table;" in html
-    assert html.count("display: table-cell") == 2
-    assert "width: 50.000%" in html
-    assert "width: 100%" in html
-    assert "border-spacing: 8px 0" in html
-    assert "data-feishu-grid-image" not in html
+    assert "<!-- feishu-grid:" in markdown
+    assert "left.jpg" in markdown
+    assert "right.jpg" in markdown

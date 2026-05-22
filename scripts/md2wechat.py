@@ -26,6 +26,7 @@ import sys
 import os
 import argparse
 import webbrowser
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -224,6 +225,9 @@ def md_to_html_body(md_body: str, theme: dict, preserve_paragraphs: bool = False
 
         # ── HTML 注释（如 <!-- digest: ... -->）────
         if stripped.startswith('<!--') and stripped.endswith('-->'):
+            grid_match = re.match(r'^<!--\s*feishu-grid:(.*?)\s*-->$', stripped)
+            if grid_match:
+                html_parts.append(make_feishu_image_grid(grid_match.group(1), theme))
             i += 1
             continue
 
@@ -520,6 +524,62 @@ def md_to_html_body(md_body: str, theme: dict, preserve_paragraphs: bool = False
         i += 1
 
     return ''.join(html_parts)
+
+
+def make_feishu_image_grid(payload: str, theme: dict) -> str:
+    try:
+        columns = json.loads(payload)
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(columns, list):
+        return ""
+    image_columns = []
+    for column in columns:
+        if not isinstance(column, dict):
+            continue
+        images = column.get("images") or []
+        if not images:
+            continue
+        image = images[0]
+        src = str(image.get("src") or "").strip()
+        if not src:
+            continue
+        try:
+            width = max(0.15, min(float(column.get("width") or 0.5), 1.0)) * 100
+        except (TypeError, ValueError):
+            width = 50
+        image_columns.append({
+            "width": width,
+            "src": src,
+            "alt": str(image.get("alt") or "飞书图片").strip() or "飞书图片",
+        })
+    if not image_columns:
+        return ""
+
+    cells = []
+    for column in image_columns:
+        src = escape_attr(column["src"])
+        alt = escape_attr(column["alt"])
+        image_attrs = (
+            f'data-local-src="{src}" src=""'
+            if not re.match(r'^(https?://|data:image/)', column["src"])
+            else f'src="{src}"'
+        )
+        cells.append(
+            f'<section style="display: table-cell; width: {column["width"]:.3f}%; '
+            f'vertical-align: top; padding: 0 4px; box-sizing: border-box;">'
+            f'<img {image_attrs} alt="{alt}" style="display: inline-block; width: 100%; '
+            f'max-width: 100%; height: auto; border-radius: 10px; '
+            f'box-shadow: rgba(20, 28, 38, 0.14) 0 6px 18px; '
+            f'background-color: transparent;"/>'
+            f'</section>'
+        )
+
+    return (
+        '<section style="margin: 16px -4px 18px -4px; display: table; width: 100%; '
+        'table-layout: fixed; border-spacing: 0;">'
+        f'{"".join(cells)}</section>'
+    )
 
 
 def is_image_caption(text: str) -> bool:

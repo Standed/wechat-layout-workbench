@@ -551,6 +551,8 @@ class FeishuHtmlMarkdownParser(HTMLParser):
         self.stack: list[str] = []
         self.link_stack: list[str] = []
         self.ordered_stack: list[int] = []
+        self.grid_stack: list[list[dict]] = []
+        self.current_grid_column: dict | None = None
         self.code_depth = 0
 
     def text(self) -> str:
@@ -597,6 +599,12 @@ class FeishuHtmlMarkdownParser(HTMLParser):
         elif tag == "ol":
             start = int(attrs_dict.get("start") or "1") if (attrs_dict.get("start") or "1").isdigit() else 1
             self.ordered_stack.append(start)
+        elif tag == "grid":
+            self.ensure_block()
+            self.grid_stack.append([])
+        elif tag == "column":
+            if self.grid_stack:
+                self.current_grid_column = {"width": attrs_dict.get("width-ratio", "0.5"), "images": []}
         elif tag == "li":
             self.ensure_block()
             if self.ordered_stack:
@@ -613,12 +621,15 @@ class FeishuHtmlMarkdownParser(HTMLParser):
             self.link_stack.append(attrs_dict.get("href", ""))
             self.append("[")
         elif tag == "img":
-            self.ensure_block()
             src = attrs_dict.get("src", "").strip()
             href = attrs_dict.get("href", "").strip()
             name = attrs_dict.get("caption") or attrs_dict.get("name") or attrs_dict.get("alt") or "飞书图片"
             media_path = download_feishu_media(src, self.out_dir) if src and not src.startswith(("http://", "https://", "data:")) else None
             image_src = media_path or href or src
+            if self.current_grid_column is not None:
+                self.current_grid_column["images"].append({"src": image_src, "alt": clean_inline_text(name)})
+                return
+            self.ensure_block()
             self.append(f"![{clean_inline_text(name)}]({image_src})" if image_src else "> 飞书图片暂时无法下载")
             self.ensure_block()
 
@@ -640,11 +651,23 @@ class FeishuHtmlMarkdownParser(HTMLParser):
             self.append(f"]({href})" if href else "]")
         elif tag == "ol" and self.ordered_stack:
             self.ordered_stack.pop()
+        elif tag == "column" and self.current_grid_column is not None:
+            if self.grid_stack:
+                self.grid_stack[-1].append(self.current_grid_column)
+            self.current_grid_column = None
+        elif tag == "grid" and self.grid_stack:
+            columns = self.grid_stack.pop()
+            payload = json.dumps(columns, ensure_ascii=False, separators=(",", ":"))
+            self.ensure_block()
+            self.append(f"<!-- feishu-grid:{payload} -->")
+            self.ensure_block()
         if tag in self.stack:
             self.stack.remove(tag)
 
     def handle_data(self, data: str) -> None:
         if not data:
+            return
+        if self.current_grid_column is not None:
             return
         if self.code_depth or "pre" in self.stack:
             self.append(data.replace("<br/>", "\n"))
@@ -682,10 +705,7 @@ def extract_feishu_document(payload: dict, doc: str) -> dict:
     document = payload.get("document") or {}
     content = document.get("content") or ""
     markdown = extract_feishu_markdown(payload, doc)
-    html = ""
-    if content and re.search(r"</?(title|p|h[1-6]|img|pre|ul|ol|li|table|blockquote|span)\b", content, flags=re.I):
-        html = localize_feishu_html_images(content, doc)
-    return {"markdown": markdown, "html": html}
+    return {"markdown": markdown, "html": ""}
 
 
 def fetch_feishu_markdown(doc: str) -> str:

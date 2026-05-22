@@ -27,3 +27,19 @@ def test_named_code_block_keeps_custom_label():
     theme = md2wechat.ACCOUNT_THEMES[md2wechat.DEFAULT_ACCOUNT]
     html = md2wechat.md_to_html_body("```Terminal\nhello\n```", theme)
     assert "Terminal" in html
+
+
+def test_feishu_image_grid_renders_two_columns_without_touching_paragraphs():
+    md2wechat = load_md2wechat_module()
+    theme = md2wechat.ACCOUNT_THEMES["羊羊AI视频"]
+    html = md2wechat.md_to_html_body(
+        '## 小标题\n\n正文第一段。\n\n<!-- feishu-grid:[{"width":"0.5","images":[{"src":"left.jpg","alt":"left"}]},{"width":"0.5","images":[{"src":"right.jpg","alt":"right"}]}] -->',
+        theme,
+    )
+
+    assert 'font-size: 22px' in html
+    assert 'margin: 16px 0 0' in html
+    assert 'display: table; width: 100%' in html
+    assert html.count('display: table-cell') == 2
+    assert 'border-radius: 10px' in html
+    assert 'box-shadow: rgba(20, 28, 38, 0.14) 0 6px 18px' in html
