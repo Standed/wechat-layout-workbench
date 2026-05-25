@@ -608,6 +608,25 @@ function platformImageSrc(image) {
   return absoluteUrl(src);
 }
 
+function isPublicImageSrc(src) {
+  return /^https?:\/\//i.test(src) && !/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])/i.test(src);
+}
+
+function zhihuImagePlaceholder(image, index) {
+  const localPath = image.getAttribute("data-local-src") || "";
+  const alt = image.getAttribute("alt") || "图片";
+  const fileName = localPath.split("/").pop() || alt;
+  const label = `【图片 ${String(index + 1).padStart(2, "0")}：${fileName}】`;
+  const hint = localPath ? `本地路径：${localPath}` : "请在知乎中用图片按钮重新上传这张图";
+  const wrapper = document.createElement("p");
+  wrapper.setAttribute(
+    "style",
+    "margin: 16px 0; padding: 10px 12px; border-left: 3px solid rgb(180, 180, 180); color: rgb(95, 99, 104); font-size: 14px; line-height: 1.7; background-color: rgb(248, 248, 248);"
+  );
+  wrapper.textContent = `${label} ${hint}`;
+  return wrapper;
+}
+
 async function buildClipboardHtml({ imageMode = "data-url" } = {}) {
   const clone = el.preview.cloneNode(true);
   clone.removeAttribute("id");
@@ -618,6 +637,15 @@ async function buildClipboardHtml({ imageMode = "data-url" } = {}) {
   const sourceImages = Array.from(el.preview.querySelectorAll("img"));
   const cloneImages = Array.from(clone.querySelectorAll("img"));
   for (let i = 0; i < sourceImages.length; i += 1) {
+    if (imageMode === "zhihu") {
+      const publicSrc = platformImageSrc(sourceImages[i]);
+      if (isPublicImageSrc(publicSrc)) {
+        cloneImages[i].setAttribute("src", publicSrc);
+      } else {
+        cloneImages[i].replaceWith(zhihuImagePlaceholder(sourceImages[i], i));
+      }
+      continue;
+    }
     const imageSrc = imageMode === "platform-url" ? platformImageSrc(sourceImages[i]) : await imageToDataUrl(sourceImages[i]);
     if (imageSrc) {
       cloneImages[i].setAttribute("src", imageSrc);
@@ -682,17 +710,30 @@ async function copyRichText() {
 }
 
 async function copyZhihuRichText() {
+  const richHtml = currentRichHtml();
+  if (richHtml) {
+    try {
+      await writeHtmlToClipboard(richHtml);
+      setStatus("知乎版已复制飞书原始富文本。现在粘贴到知乎，图片/GIF 会尽量沿用飞书剪贴板格式。");
+      return;
+    } catch (error) {
+      if (selectAndCopyHtml(richHtml)) {
+        setStatus("知乎版已用兼容方式复制飞书原始富文本。现在粘贴到知乎。");
+        return;
+      }
+    }
+  }
   if (!lastContentHtml.trim() && !el.preview.innerHTML.trim()) {
     setStatus("还没有可复制的排版内容。", true);
     return;
   }
-  const html = await buildClipboardHtml({ imageMode: "platform-url" });
+  const html = await buildClipboardHtml({ imageMode: "zhihu" });
   try {
     await writeHtmlToClipboard(html);
-    setStatus("知乎版已复制。图片会尽量保留为 URL；如果知乎仍提示图片导入失败，请用知乎图片按钮上传原图/GIF。");
+    setStatus("知乎版已复制。本地图片已转成占位提示，请在知乎里用图片按钮按占位上传原图/GIF。");
   } catch (error) {
     if (selectAndCopyHtml(html)) {
-      setStatus("知乎版已用兼容方式复制。现在粘贴到知乎；如果图片导入失败，请用知乎图片按钮上传原图/GIF。");
+      setStatus("知乎版已用兼容方式复制。本地图片已转成占位提示，请在知乎里用图片按钮上传原图/GIF。");
       return;
     }
     setStatus("知乎版复制失败。请确认浏览器允许剪贴板权限，或先点预览区后手动 Cmd+C。", true);
