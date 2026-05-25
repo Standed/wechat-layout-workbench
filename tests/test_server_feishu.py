@@ -113,6 +113,14 @@ def test_feishu_doc_id_accepts_openapi_query_params():
     assert server.feishu_doc_id("https://example.feishu.cn/wiki?obj_token=WikiToken") == "WikiToken"
 
 
+def test_image_extension_keeps_gif_by_content_type_and_file_header():
+    server = load_server_module()
+
+    assert server.image_extension("image/gif") == ".gif"
+    assert server.image_extension("application/octet-stream", b"GIF89a...") == ".gif"
+    assert server.image_extension("application/octet-stream", b"RIFFxxxxWEBP...") == ".webp"
+
+
 def test_fetch_feishu_document_openapi_converts_blocks_and_grid(monkeypatch):
     server = load_server_module()
 

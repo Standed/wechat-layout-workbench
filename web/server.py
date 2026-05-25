@@ -473,7 +473,15 @@ def get_feishu_tenant_access_token() -> str:
     return token
 
 
-def image_extension(content_type: str) -> str:
+def image_extension(content_type: str, body: bytes = b"") -> str:
+    if body.startswith((b"GIF87a", b"GIF89a")):
+        return ".gif"
+    if body.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if body.startswith(b"RIFF") and body[8:12] == b"WEBP":
+        return ".webp"
+    if body.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
     lowered = (content_type or "").lower()
     if "png" in lowered:
         return ".png"
@@ -506,7 +514,7 @@ def download_feishu_media_openapi(token: str, out_dir: Path, tenant_token: str) 
         except Exception:
             pass
         raise RuntimeError(friendly_feishu_openapi_error(detail, target="image")) from exc
-    ext = image_extension(content_type)
+    ext = image_extension(content_type, body)
     path = out_dir / f"{safe_token}{ext}"
     path.write_bytes(body)
     return path.relative_to(ROOT).as_posix()
