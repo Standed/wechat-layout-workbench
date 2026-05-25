@@ -18,7 +18,7 @@ from html import unescape
 from html.parser import HTMLParser
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -371,7 +371,145 @@ def feishu_doc_id(doc: str) -> str:
     match = re.search(r"/(?:docx|docs|wiki)/([A-Za-z0-9]+)", doc)
     if match:
         return match.group(1)
+    parsed = urlparse(doc)
+    params = parse_qs(parsed.query)
+    for key in ("document_id", "obj_token"):
+        value = (params.get(key) or [""])[0]
+        if value:
+            return value
     return safe_slug(doc)[:32] or "feishu-doc"
+
+
+def feishu_api_base_url() -> str:
+    return os.environ.get("FEISHU_BASE_URL", "https://open.feishu.cn/open-apis").rstrip("/")
+
+
+def feishu_openapi_config() -> dict:
+    app_id = os.environ.get("FEISHU_APP_ID", "").strip()
+    app_secret = os.environ.get("FEISHU_APP_SECRET", "").strip()
+    return {
+        "appId": app_id,
+        "appSecret": app_secret,
+        "baseUrl": feishu_api_base_url(),
+        "configured": bool(app_id and app_secret),
+    }
+
+
+def feishu_openapi_health() -> dict:
+    config = feishu_openapi_config()
+    missing = []
+    if not config["appId"]:
+        missing.append("FEISHU_APP_ID")
+    if not config["appSecret"]:
+        missing.append("FEISHU_APP_SECRET")
+    return {
+        "ok": config["configured"],
+        "configured": config["configured"],
+        "baseUrl": config["baseUrl"],
+        "missing": missing,
+        "error": "" if config["configured"] else "未配置飞书 OpenAPI 应用凭证。",
+    }
+
+
+def friendly_feishu_openapi_error(message: str, target: str = "") -> str:
+    text = str(message or "").strip()
+    if re.search(r"Access denied", text, flags=re.I) and re.search(r"docx:document|document", text, flags=re.I):
+        return (
+            "飞书 OpenAPI 已连通，但当前应用没有读取这个文档的权限。"
+            "请在飞书开放平台开通并发布 docx:document:readonly 权限，"
+            "并确认该文档已授权给应用或对应用可读。"
+        )
+    if re.search(r"Access denied", text, flags=re.I) and re.search(r"media|drive|download", text, flags=re.I):
+        return (
+            "飞书正文已读取，但图片下载权限不足。"
+            "请开通并发布 docs:document.media:download 或 drive:drive:readonly 权限。"
+        )
+    if target == "image" and re.search(r"permission|forbidden|403|Access denied", text, flags=re.I):
+        return (
+            "飞书图片下载失败：当前应用缺少图片下载权限。"
+            "请开通 docs:document.media:download 或 drive:drive:readonly。"
+        )
+    return text or "飞书 OpenAPI 请求失败。"
+
+
+def feishu_openapi_request(path: str, method: str = "GET", body: dict | None = None, token: str = "", timeout: int = 30) -> dict:
+    url = f"{feishu_api_base_url()}{path}"
+    data = json.dumps(body or {}, ensure_ascii=False).encode("utf-8") if body is not None else None
+    headers = {"Content-Type": "application/json; charset=utf-8"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        try:
+            payload = json.loads(detail)
+            detail = payload.get("msg") or payload.get("message") or detail
+        except Exception:
+            pass
+        raise RuntimeError(friendly_feishu_openapi_error(detail)) from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"飞书 OpenAPI 网络请求失败：{exc.reason}") from exc
+    if payload.get("code", 0) not in (0, None):
+        message = payload.get("msg") or payload.get("message") or json.dumps(payload, ensure_ascii=False)
+        raise RuntimeError(friendly_feishu_openapi_error(message))
+    return payload
+
+
+def get_feishu_tenant_access_token() -> str:
+    config = feishu_openapi_config()
+    if not config["configured"]:
+        raise RuntimeError("请先配置 FEISHU_APP_ID 和 FEISHU_APP_SECRET。")
+    data = feishu_openapi_request(
+        "/auth/v3/tenant_access_token/internal",
+        method="POST",
+        body={"app_id": config["appId"], "app_secret": config["appSecret"]},
+    )
+    token = data.get("tenant_access_token") or (data.get("data") or {}).get("tenant_access_token")
+    if not token:
+        raise RuntimeError("飞书 OpenAPI 授权失败：没有拿到 tenant_access_token。")
+    return token
+
+
+def image_extension(content_type: str) -> str:
+    lowered = (content_type or "").lower()
+    if "png" in lowered:
+        return ".png"
+    if "webp" in lowered:
+        return ".webp"
+    if "gif" in lowered:
+        return ".gif"
+    return ".jpg"
+
+
+def download_feishu_media_openapi(token: str, out_dir: Path, tenant_token: str) -> str | None:
+    if not token:
+        return None
+    out_dir.mkdir(parents=True, exist_ok=True)
+    safe_token = re.sub(r"[^A-Za-z0-9_-]+", "", token)[:42] or "image"
+    existing = sorted(out_dir.glob(f"{safe_token}.*"))
+    if existing:
+        return existing[0].relative_to(ROOT).as_posix()
+    url = f"{feishu_api_base_url()}/drive/v1/medias/{quote(token)}/download"
+    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {tenant_token}"})
+    try:
+        with urllib.request.urlopen(request, timeout=90) as response:
+            content_type = response.headers.get("Content-Type", "image/jpeg")
+            body = response.read()
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        try:
+            payload = json.loads(detail)
+            detail = payload.get("msg") or payload.get("message") or detail
+        except Exception:
+            pass
+        raise RuntimeError(friendly_feishu_openapi_error(detail, target="image")) from exc
+    ext = image_extension(content_type)
+    path = out_dir / f"{safe_token}{ext}"
+    path.write_bytes(body)
+    return path.relative_to(ROOT).as_posix()
 
 
 def cli_text(result: subprocess.CompletedProcess[str] | None) -> str:
@@ -543,6 +681,293 @@ def clean_inline_text(text: str) -> str:
     return text.replace("[", "\\[").replace("]", "\\]") or "飞书图片"
 
 
+def block_id(block: dict) -> str:
+    return str(block.get("block_id") or block.get("blockId") or block.get("id") or "")
+
+
+def block_children(block: dict) -> list[str]:
+    children = block.get("children") or block.get("children_ids") or block.get("childrenIds") or []
+    return [str(child) for child in children if child]
+
+
+def block_type_name(block: dict) -> str:
+    for key in (
+        "heading1", "heading2", "heading3", "heading4", "heading5", "heading6", "heading7", "heading8", "heading9",
+        "bullet", "ordered", "quote", "callout", "code", "image", "table", "file",
+        "grid", "column", "grid_column", "gridColumn", "view", "text", "divider", "todo", "quote_container", "quoteContainer",
+    ):
+        if key in block and block.get(key) is not None:
+            if key == "quoteContainer":
+                return "quote_container"
+            return "grid_column" if key == "gridColumn" else key
+    try:
+        block_type = int(block.get("block_type") or block.get("blockType") or 0)
+    except (TypeError, ValueError):
+        block_type = 0
+    by_type = {
+        1: "page",
+        2: "text",
+        3: "heading1",
+        4: "heading2",
+        5: "heading3",
+        6: "heading4",
+        7: "heading5",
+        8: "heading6",
+        9: "heading7",
+        10: "heading8",
+        11: "heading9",
+        12: "bullet",
+        13: "ordered",
+        14: "code",
+        15: "quote",
+        17: "todo",
+        19: "callout",
+        22: "divider",
+        23: "file",
+        24: "grid",
+        25: "grid_column",
+        27: "image",
+        31: "table",
+        32: "table_cell",
+        33: "view",
+        34: "quote_container",
+    }
+    return by_type.get(block_type, "")
+
+
+def block_carrier(block: dict) -> dict:
+    type_name = block_type_name(block)
+    carrier = block.get(type_name) if type_name else None
+    if not carrier and type_name == "grid_column":
+        carrier = block.get("gridColumn") or block.get("grid_column") or block.get("column")
+    return carrier if isinstance(carrier, dict) else block
+
+
+def markdown_text(value: str) -> str:
+    return str(value or "").replace("\r\n", "\n").replace("\n", " ")
+
+
+def element_to_markdown(element: dict) -> str:
+    run = (
+        element.get("text_run")
+        or element.get("textRun")
+        or element.get("mention_user")
+        or element.get("mentionUser")
+        or element.get("mention_doc")
+        or element.get("mentionDoc")
+        or element
+    )
+    content = markdown_text(run.get("content") or run.get("text") or element.get("content") or "")
+    if not content:
+        return ""
+    style = (
+        run.get("text_element_style")
+        or run.get("textElementStyle")
+        or element.get("text_element_style")
+        or element.get("textElementStyle")
+        or {}
+    )
+    link = style.get("link") or {}
+    href = link.get("url") or link.get("href") or ""
+    if href:
+        content = f"[{content}]({href})"
+    if style.get("bold"):
+        content = f"**{content}**"
+    if style.get("italic"):
+        content = f"*{content}*"
+    if style.get("strikethrough"):
+        content = f"~~{content}~~"
+    if style.get("inline_code") or style.get("inlineCode"):
+        content = f"`{content}`"
+    return content
+
+
+def rich_text_from_block(block: dict) -> str:
+    carrier = block_carrier(block)
+    elements = carrier.get("elements") or carrier.get("text_elements") or carrier.get("textElements") or []
+    if elements:
+        return "".join(element_to_markdown(element) for element in elements).strip()
+    for key in ("content", "text", "title", "name"):
+        if isinstance(carrier.get(key), str):
+            return markdown_text(carrier.get(key)).strip()
+        if isinstance(block.get(key), str):
+            return markdown_text(block.get(key)).strip()
+    return ""
+
+
+def plain_text_from_block(block: dict) -> str:
+    return re.sub(r"[*_`~]+", "", rich_text_from_block(block)).strip()
+
+
+def image_token_from_block(block: dict) -> str:
+    image = block.get("image") if isinstance(block.get("image"), dict) else block
+    return str(
+        image.get("token")
+        or image.get("file_token")
+        or image.get("fileToken")
+        or image.get("media_token")
+        or image.get("mediaToken")
+        or ""
+    )
+
+
+def build_block_tree(blocks: list[dict]) -> dict:
+    by_id = {block_id(block): block for block in blocks if block_id(block)}
+    child_ids = {child_id for block in blocks for child_id in block_children(block)}
+    page_children = [
+        by_id[child_id]
+        for block in blocks
+        if block_type_name(block) == "page"
+        for child_id in block_children(block)
+        if child_id in by_id
+    ]
+    parentless = [
+        block for block in blocks
+        if block_type_name(block) != "page" and block_id(block) and block_id(block) not in child_ids
+    ]
+    return {"byId": by_id, "roots": page_children or parentless or blocks, "visited": set()}
+
+
+def join_markdown_parts(*parts: str) -> str:
+    return "\n\n".join(str(part or "").strip() for part in parts if str(part or "").strip())
+
+
+def child_blocks(block: dict, context: dict) -> list[dict]:
+    return [context["byId"][child_id] for child_id in block_children(block) if child_id in context["byId"]]
+
+
+def children_to_markdown(block: dict, context: dict) -> str:
+    return join_markdown_parts(*(block_to_markdown(child, context) for child in child_blocks(block, context)))
+
+
+def blockquote_markdown(markdown: str) -> str:
+    return "\n".join(f"> {line}" for line in str(markdown or "").splitlines() if line.strip()).strip()
+
+
+def table_markdown(block: dict) -> str:
+    table = block.get("table") or {}
+    rows = table.get("rows") or table.get("cells") or []
+    if not rows or not isinstance(rows, list) or not isinstance(rows[0], list):
+        return ""
+    normalized = [
+        [markdown_text(cell.get("text") if isinstance(cell, dict) else cell).strip() for cell in row]
+        for row in rows
+    ]
+    head, *body = normalized
+    return "\n".join([
+        f"| {' | '.join(head)} |",
+        f"| {' | '.join('---' for _ in head)} |",
+        *(f"| {' | '.join(row)} |" for row in body),
+    ])
+
+
+def file_markdown(block: dict) -> str:
+    file = block.get("file") or {}
+    name = str(file.get("name") or file.get("file_name") or file.get("fileName") or "").strip()
+    return f"飞书附件：{name}" if name else ""
+
+
+def collect_grid_column_images(block: dict, context: dict) -> list[dict]:
+    current_id = block_id(block)
+    if current_id:
+        context["visited"].add(current_id)
+    images = []
+    if block_type_name(block) == "image":
+        token = image_token_from_block(block)
+        path = download_feishu_media_openapi(token, context["outDir"], context["token"]) if token else None
+        if path:
+            images.append({"src": path, "alt": "飞书图片"})
+    for child in child_blocks(block, context):
+        images.extend(collect_grid_column_images(child, context))
+    return images
+
+
+def grid_to_markdown(block: dict, context: dict) -> str:
+    columns = []
+    for child in child_blocks(block, context):
+        type_name = block_type_name(child)
+        if type_name not in ("column", "grid_column"):
+            continue
+        carrier = block_carrier(child)
+        width = carrier.get("width_ratio") or carrier.get("widthRatio") or carrier.get("width") or "0.5"
+        try:
+            width_value = float(width)
+            width = str(width_value / 100 if width_value > 1 else width_value)
+        except (TypeError, ValueError):
+            width = "0.5"
+        images = collect_grid_column_images(child, context)
+        if images:
+            columns.append({"width": str(width), "images": images})
+    if len(columns) >= 2:
+        payload = json.dumps(columns, ensure_ascii=False, separators=(",", ":"))
+        rendered_children = children_to_markdown(block, context)
+        if re.sub(r"!\[[^\]]*\]\([^)]+\)", "", rendered_children).strip():
+            return join_markdown_parts(f"<!-- feishu-grid:{payload} -->", rendered_children)
+        return f"<!-- feishu-grid:{payload} -->"
+    return children_to_markdown(block, context)
+
+
+def block_to_markdown(block: dict, context: dict) -> str:
+    current_id = block_id(block)
+    if current_id and current_id in context["visited"]:
+        return ""
+    if current_id:
+        context["visited"].add(current_id)
+    type_name = block_type_name(block)
+    text = rich_text_from_block(block)
+    if type_name == "grid":
+        return grid_to_markdown(block, context)
+    children = children_to_markdown(block, context)
+    if type_name in ("page", "view", "column", "grid_column"):
+        return children
+    if type_name.startswith("heading"):
+        level = min(int(type_name.replace("heading", "") or "2"), 4)
+        return join_markdown_parts(f"{'#' * level} {text}".strip(), children)
+    if type_name == "bullet":
+        return join_markdown_parts(f"- {text}".strip(), children)
+    if type_name == "ordered":
+        return join_markdown_parts(f"1. {text}".strip(), children)
+    if type_name == "todo":
+        return join_markdown_parts(f"- [ ] {text}".strip(), children)
+    if type_name == "quote":
+        return join_markdown_parts(blockquote_markdown(text), children)
+    if type_name == "quote_container":
+        return blockquote_markdown(children or text)
+    if type_name == "callout":
+        content = children or text
+        return f"> {content}" if content else ""
+    if type_name == "divider":
+        return "---"
+    if type_name == "code":
+        return join_markdown_parts(f"```\n{plain_text_from_block(block)}\n```", children)
+    if type_name == "image":
+        token = image_token_from_block(block)
+        media_path = download_feishu_media_openapi(token, context["outDir"], context["token"]) if token else None
+        return join_markdown_parts(f"![飞书图片]({media_path})" if media_path else f"> 图片下载失败：{token}", children)
+    if type_name == "table":
+        return join_markdown_parts(table_markdown(block), children)
+    if type_name == "file":
+        return join_markdown_parts(file_markdown(block), children)
+    return join_markdown_parts(text, children)
+
+
+def feishu_blocks_to_markdown(blocks: list[dict], tenant_token: str, doc_id: str) -> str:
+    context = {
+        **build_block_tree(blocks),
+        "token": tenant_token,
+        "outDir": ROOT / "output" / "_feishu_media" / doc_id,
+    }
+    parts = [block_to_markdown(block, context) for block in context["roots"]]
+    for block in blocks:
+        current_id = block_id(block)
+        if current_id and current_id in context["visited"]:
+            continue
+        if block_type_name(block) == "page":
+            continue
+        parts.append(block_to_markdown(block, context))
+    return join_markdown_parts(*parts)
+
+
 class FeishuHtmlMarkdownParser(HTMLParser):
     def __init__(self, doc: str):
         super().__init__(convert_charrefs=True)
@@ -708,13 +1133,78 @@ def extract_feishu_document(payload: dict, doc: str) -> dict:
     return {"markdown": markdown, "html": ""}
 
 
+def fetch_feishu_document_metadata_openapi(doc_id: str, tenant_token: str) -> dict:
+    try:
+        data = feishu_openapi_request(f"/docx/v1/documents/{quote(doc_id)}", token=tenant_token)
+        payload = data.get("data") or {}
+        return payload.get("document") or payload
+    except Exception:
+        return {}
+
+
+def fetch_feishu_blocks_openapi(doc_id: str, tenant_token: str) -> list[dict]:
+    blocks: list[dict] = []
+    page_token = ""
+    while True:
+        query = {"page_size": "500"}
+        if page_token:
+            query["page_token"] = page_token
+        data = feishu_openapi_request(
+            f"/docx/v1/documents/{quote(doc_id)}/blocks?{urlencode(query)}",
+            token=tenant_token,
+            timeout=60,
+        )
+        payload = data.get("data") or {}
+        blocks.extend(payload.get("items") or payload.get("blocks") or [])
+        page_token = payload.get("page_token") or payload.get("next_page_token") or ""
+        if not page_token or not (payload.get("has_more") or payload.get("hasMore")):
+            break
+    return blocks
+
+
+def fetch_feishu_raw_content_openapi(doc_id: str, tenant_token: str) -> str:
+    try:
+        data = feishu_openapi_request(f"/docx/v1/documents/{quote(doc_id)}/raw_content", token=tenant_token)
+    except Exception:
+        return ""
+    payload = data.get("data") or {}
+    return str(payload.get("content") or payload.get("raw_content") or payload.get("rawContent") or "").strip()
+
+
+def clean_feishu_title(value: str) -> str:
+    return re.sub(r"[#*_`]+", "", str(value or "")).strip() or "飞书导入文章"
+
+
+def has_useful_feishu_content(markdown: str, title: str) -> bool:
+    content = re.sub(r"\s+", " ", markdown or "").strip()
+    return bool(content and content != clean_feishu_title(title))
+
+
+def fetch_feishu_document_openapi(doc: str) -> dict:
+    doc_id = feishu_doc_id(doc)
+    tenant_token = get_feishu_tenant_access_token()
+    document = fetch_feishu_document_metadata_openapi(doc_id, tenant_token)
+    blocks = fetch_feishu_blocks_openapi(doc_id, tenant_token)
+    title = clean_feishu_title(
+        document.get("title")
+        or document.get("name")
+        or next((rich_text_from_block(block) for block in blocks if rich_text_from_block(block)), "")
+    )
+    markdown = feishu_blocks_to_markdown(blocks, tenant_token, doc_id).strip()
+    if not markdown:
+        markdown = fetch_feishu_raw_content_openapi(doc_id, tenant_token)
+    if not has_useful_feishu_content(markdown, title):
+        raise RuntimeError("没有从飞书文档读取到有效正文。请确认应用有文档读取权限，并且该文档已授权给应用或设置为公开可读。")
+    if title and not re.search(r"^\s*#\s+", markdown, flags=re.MULTILINE):
+        markdown = f"# {title}\n\n{markdown}"
+    return {"markdown": markdown.strip(), "html": "", "source": "feishuOpenApi", "documentId": doc_id}
+
+
 def fetch_feishu_markdown(doc: str) -> str:
     return fetch_feishu_document(doc)["markdown"]
 
 
-def fetch_feishu_document(doc: str) -> dict:
-    if not doc.strip():
-        raise RuntimeError("请提供飞书文档链接。")
+def fetch_feishu_document_lark_cli(doc: str) -> dict:
     health = lark_cli_health()
     if not health.get("ok"):
         raise RuntimeError(health.get("error") or "飞书导入环境未就绪，请先检查 lark-cli。")
@@ -738,7 +1228,25 @@ def fetch_feishu_document(doc: str) -> dict:
     data = parse_json_from_cli(cli_text(result))
     if not data.get("ok"):
         raise RuntimeError(json.dumps(data.get("error", data), ensure_ascii=False))
-    return extract_feishu_document(data["data"], doc)
+    result_payload = extract_feishu_document(data["data"], doc)
+    result_payload["source"] = "larkCli"
+    return result_payload
+
+
+def fetch_feishu_document(doc: str) -> dict:
+    if not doc.strip():
+        raise RuntimeError("请提供飞书文档链接。")
+    errors: list[str] = []
+    if feishu_openapi_config()["configured"]:
+        try:
+            return fetch_feishu_document_openapi(doc.strip())
+        except Exception as exc:
+            errors.append(f"OpenAPI 导入失败：{exc}")
+    try:
+        return fetch_feishu_document_lark_cli(doc.strip())
+    except Exception as exc:
+        errors.append(f"lark-cli 导入失败：{exc}")
+    raise RuntimeError("\n\n".join(errors) or "飞书导入失败。")
 
 
 def safe_slug(text: str) -> str:
@@ -1252,7 +1760,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if self.path == "/api/health":
-            self.send_json(200, {"ok": True, "larkCli": lark_cli_health()})
+            self.send_json(200, {"ok": True, "larkCli": lark_cli_health(), "feishuOpenApi": feishu_openapi_health()})
             return
 
         if self.path == "/api/settings":
@@ -1346,7 +1854,16 @@ class Handler(SimpleHTTPRequestHandler):
                 try:
                     self.send_json(200, fetch_feishu_document(doc))
                 except Exception as exc:
-                    self.send_json(500, {"error": str(exc), "diagnostics": {"larkCli": lark_cli_health()}})
+                    self.send_json(
+                        500,
+                        {
+                            "error": str(exc),
+                            "diagnostics": {
+                                "larkCli": lark_cli_health(),
+                                "feishuOpenApi": feishu_openapi_health(),
+                            },
+                        },
+                    )
                 return
 
             if self.path == "/api/export-card":
