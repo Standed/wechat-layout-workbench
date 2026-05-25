@@ -74,13 +74,38 @@ OPENAI_API_KEY=你的 key
 OPENAI_IMAGE_MODEL=gpt-image-2
 OPENAI_IMAGE_SIZE=1584x672
 OPENAI_IMAGE_QUALITY=high
+
+# 飞书线上导入模式
+FEISHU_APP_ID=飞书开放平台应用 app_id
+FEISHU_APP_SECRET=飞书开放平台应用 app_secret
+FEISHU_BASE_URL=https://open.feishu.cn/open-apis
 ```
 
 ## 飞书导入
 
-飞书链接导入依赖本机可用的 `lark-cli` 登录态。没有 `lark-cli` 时仍可使用 Markdown 或飞书富文本粘贴模式。
+飞书链接导入支持两种模式：
 
-导入原理：
+- 线上 OpenAPI 模式：服务端配置 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 后，后端直接通过飞书 OpenAPI 读取文档和图片。访问者只需要粘贴链接，不需要本机安装 `lark-cli`。
+- 本地 `lark-cli` 模式：未配置 OpenAPI 时，继续使用本机 `lark-cli` 登录态读取文档；适合个人本地使用。
+
+系统会优先尝试 OpenAPI；如果 OpenAPI 未配置或读取失败，会回退到 `lark-cli`。两种模式都会先转成 Markdown，再走公众号排版渲染链路，避免飞书导入影响正文段距、小标题样式和图片网格样式。
+
+OpenAPI 模式原理：
+
+1. 浏览器把飞书链接发给本地服务的 `/api/import-feishu`。
+2. 服务端用 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 获取 `tenant_access_token`。
+3. 服务端读取 `/docx/v1/documents/{document_id}` 和 `/docx/v1/documents/{document_id}/blocks`。
+4. 服务端把 block 树转成 Markdown，并通过 `/drive/v1/medias/{token}/download` 下载图片到 `output/_feishu_media/`。
+5. 页面把 Markdown 转成公众号可复制富文本。
+
+飞书开放平台应用至少需要开通并发布：
+
+- `docx:document:readonly` 或对应云文档读取权限
+- `docs:document.media:download` 或 `drive:drive:readonly`
+
+注意：你个人能编辑文档，不代表开放平台应用能通过 API 读取文档。需要确认文档已授权给应用，或在组织权限范围内对应用可读。
+
+本地 `lark-cli` 模式原理：
 
 1. 浏览器把飞书链接发给本地服务的 `/api/import-feishu`。
 2. 本地 Python 服务调用 `lark-cli docs +fetch --doc <链接> --format json`。
@@ -123,23 +148,13 @@ Windows 推荐直接运行项目脚本，它会检查 Python、`lark-cli`、飞�
 .\scripts\start-local.ps1 -Port 8765
 ```
 
-## 线上部署模式
+## 线上部署建议
 
-`xysaiai.cn/admin/imports/feishu` 这类线上导入通常不是依赖访问者电脑的 `lark-cli`，而是网站后端自己接入飞书开放平台：
-
-1. 服务端保存飞书应用的 `FEISHU_APP_ID` / `FEISHU_APP_SECRET`。
-2. 服务端用飞书 OpenAPI 获取 `tenant_access_token` 或用户授权 token。
-3. 后端读取 docx/wiki 内容，解析标题、段落、列表、表格、图片 token。
-4. 后端下载图片并保存到本站对象存储或服务器目录。
-5. 前端只负责输入链接、展示导入结果，不要求用户电脑安装 CLI。
-
-适合团队线上版的推荐路线：
+适合团队线上版的路线：
 
 - 内部团队用：先做“服务端飞书应用凭证”模式，限定只有自己团队可访问。
 - 多用户 SaaS 用：再做 OAuth 用户授权模式，每个用户绑定自己的飞书身份。
 - 图片存储：线上不要依赖飞书外链，建议保存到 Cloudflare R2、S3 或服务器本地静态目录。
-
-当前本地版默认是 `lark-cli` 模式；线上版要做到和西堂一样，需要新增服务端飞书 OpenAPI 模式。
 
 ## 账号首尾模板
 

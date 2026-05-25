@@ -85,4 +85,122 @@ def test_extract_feishu_document_converts_html_payload_to_markdown_and_html():
     assert "# 飞书标题" in result["markdown"]
     assert "**第一段**" in result["markdown"]
     assert "2. 第二项" in result["markdown"]
-    assert "<strong>第一段</strong>" in result["html"]
+    assert result["html"] == ""
+
+
+def test_extract_feishu_document_preserves_image_grid_in_markdown():
+    server = load_server_module()
+    payload = {
+        "document": {
+            "title": "飞书标题",
+            "content": '<grid><column width-ratio="0.5"><img src="left.jpg" name="left.jpg"/></column>'
+            '<column width-ratio="0.5"><img src="right.jpg" name="right.jpg"/></column></grid>',
+        }
+    }
+    result = server.extract_feishu_document(payload, "https://example.feishu.cn/docx/AbCd")
+    markdown = result["markdown"]
+
+    assert "<!-- feishu-grid:" in markdown
+    assert "left.jpg" in markdown
+    assert "right.jpg" in markdown
+
+
+def test_feishu_doc_id_accepts_openapi_query_params():
+    server = load_server_module()
+
+    assert server.feishu_doc_id("https://example.feishu.cn/docx/AbCd") == "AbCd"
+    assert server.feishu_doc_id("https://example.feishu.cn/docx?document_id=QueryId") == "QueryId"
+    assert server.feishu_doc_id("https://example.feishu.cn/wiki?obj_token=WikiToken") == "WikiToken"
+
+
+def test_image_extension_keeps_gif_by_content_type_and_file_header():
+    server = load_server_module()
+
+    assert server.image_extension("image/gif") == ".gif"
+    assert server.image_extension("application/octet-stream", b"GIF89a...") == ".gif"
+    assert server.image_extension("application/octet-stream", b"RIFFxxxxWEBP...") == ".webp"
+
+
+def test_fetch_feishu_document_openapi_converts_blocks_and_grid(monkeypatch):
+    server = load_server_module()
+
+    calls = []
+
+    def fake_request(path, method="GET", body=None, token="", timeout=30):
+        calls.append(path)
+        if path == "/auth/v3/tenant_access_token/internal":
+            return {"tenant_access_token": "tenant-token"}
+        if path == "/docx/v1/documents/Doc123":
+            return {"data": {"document": {"title": "飞书标题"}}}
+        if path.startswith("/docx/v1/documents/Doc123/blocks"):
+            return {
+                "data": {
+                    "items": [
+                        {"block_id": "page", "block_type": 1, "children": ["h2", "p1", "grid"]},
+                        {
+                            "block_id": "h2",
+                            "block_type": 4,
+                            "heading2": {"elements": [{"text_run": {"content": "小标题", "text_element_style": {"bold": True}}}]},
+                        },
+                        {
+                            "block_id": "p1",
+                            "block_type": 2,
+                            "text": {"elements": [{"text_run": {"content": "第一段", "text_element_style": {}}}]},
+                        },
+                        {"block_id": "grid", "block_type": 24, "children": ["c1", "c2"]},
+                        {"block_id": "c1", "block_type": 25, "grid_column": {"width_ratio": "0.5"}, "children": ["img1"]},
+                        {"block_id": "c2", "block_type": 25, "grid_column": {"width_ratio": "0.5"}, "children": ["img2"]},
+                        {"block_id": "img1", "block_type": 27, "image": {"token": "left-token"}},
+                        {"block_id": "img2", "block_type": 27, "image": {"token": "right-token"}},
+                    ],
+                    "has_more": False,
+                }
+            }
+        raise AssertionError(f"unexpected path: {path}")
+
+    def fake_download(token, out_dir, tenant_token):
+        assert tenant_token == "tenant-token"
+        return f"output/_feishu_media/Doc123/{token}.jpg"
+
+    monkeypatch.setenv("FEISHU_APP_ID", "app-id")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "app-secret")
+    monkeypatch.setattr(server, "feishu_openapi_request", fake_request)
+    monkeypatch.setattr(server, "download_feishu_media_openapi", fake_download)
+
+    result = server.fetch_feishu_document_openapi("https://example.feishu.cn/docx/Doc123")
+
+    assert result["source"] == "feishuOpenApi"
+    assert result["documentId"] == "Doc123"
+    assert "# 飞书标题" in result["markdown"]
+    assert "## **小标题**" in result["markdown"]
+    assert "第一段" in result["markdown"]
+    assert "<!-- feishu-grid:" in result["markdown"]
+    assert "left-token.jpg" in result["markdown"]
+    assert "right-token.jpg" in result["markdown"]
+    assert any("/blocks?" in call for call in calls)
+
+
+def test_fetch_feishu_document_prefers_openapi_when_configured(monkeypatch):
+    server = load_server_module()
+
+    monkeypatch.setenv("FEISHU_APP_ID", "app-id")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "app-secret")
+    monkeypatch.setattr(server, "fetch_feishu_document_openapi", lambda doc: {"markdown": "# openapi", "html": "", "source": "feishuOpenApi"})
+
+    def should_not_call_lark_cli(doc):
+        raise AssertionError("lark-cli should not be called when OpenAPI succeeds")
+
+    monkeypatch.setattr(server, "fetch_feishu_document_lark_cli", should_not_call_lark_cli)
+
+    assert server.fetch_feishu_document("https://example.feishu.cn/docx/Doc123")["source"] == "feishuOpenApi"
+
+
+def test_fetch_feishu_document_falls_back_to_lark_cli(monkeypatch):
+    server = load_server_module()
+
+    monkeypatch.setenv("FEISHU_APP_ID", "app-id")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "app-secret")
+    monkeypatch.setattr(server, "fetch_feishu_document_openapi", lambda doc: (_ for _ in ()).throw(RuntimeError("openapi failed")))
+    monkeypatch.setattr(server, "fetch_feishu_document_lark_cli", lambda doc: {"markdown": "# cli", "html": "", "source": "larkCli"})
+
+    assert server.fetch_feishu_document("https://example.feishu.cn/docx/Doc123")["source"] == "larkCli"

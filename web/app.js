@@ -42,6 +42,7 @@ const el = {
   status: document.querySelector("#status"),
   convert: document.querySelector("#convert"),
   copyRich: document.querySelector("#copyRich"),
+  copyZhihu: document.querySelector("#copyZhihu"),
   copyHtml: document.querySelector("#copyHtml"),
   copyMarkdown: document.querySelector("#copyMarkdown"),
   exportCard: document.querySelector("#exportCard"),
@@ -591,7 +592,42 @@ async function imageToDataUrl(image) {
   }
 }
 
-async function buildClipboardHtml() {
+function absoluteUrl(src) {
+  try {
+    return new URL(src, window.location.href).href;
+  } catch (error) {
+    return src;
+  }
+}
+
+function platformImageSrc(image) {
+  const src = image.getAttribute("src") || "";
+  if (!src || src.startsWith("data:image/")) {
+    return src;
+  }
+  return absoluteUrl(src);
+}
+
+function isPublicImageSrc(src) {
+  return /^https?:\/\//i.test(src) && !/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])/i.test(src);
+}
+
+function zhihuImagePlaceholder(image, index) {
+  const localPath = image.getAttribute("data-local-src") || "";
+  const alt = image.getAttribute("alt") || "图片";
+  const fileName = localPath.split("/").pop() || alt;
+  const label = `【图片 ${String(index + 1).padStart(2, "0")}：${fileName}】`;
+  const hint = localPath ? `本地路径：${localPath}` : "请在知乎中用图片按钮重新上传这张图";
+  const wrapper = document.createElement("p");
+  wrapper.setAttribute(
+    "style",
+    "margin: 16px 0; padding: 10px 12px; border-left: 3px solid rgb(180, 180, 180); color: rgb(95, 99, 104); font-size: 14px; line-height: 1.7; background-color: rgb(248, 248, 248);"
+  );
+  wrapper.textContent = `${label} ${hint}`;
+  return wrapper;
+}
+
+async function buildClipboardHtml({ imageMode = "data-url" } = {}) {
   const clone = el.preview.cloneNode(true);
   clone.removeAttribute("id");
   clone.removeAttribute("contenteditable");
@@ -601,12 +637,55 @@ async function buildClipboardHtml() {
   const sourceImages = Array.from(el.preview.querySelectorAll("img"));
   const cloneImages = Array.from(clone.querySelectorAll("img"));
   for (let i = 0; i < sourceImages.length; i += 1) {
-    const dataUrl = await imageToDataUrl(sourceImages[i]);
-    if (dataUrl) {
-      cloneImages[i].setAttribute("src", dataUrl);
+    if (imageMode === "zhihu") {
+      const publicSrc = platformImageSrc(sourceImages[i]);
+      if (isPublicImageSrc(publicSrc)) {
+        cloneImages[i].setAttribute("src", publicSrc);
+      } else {
+        cloneImages[i].replaceWith(zhihuImagePlaceholder(sourceImages[i], i));
+      }
+      continue;
+    }
+    const imageSrc = imageMode === "platform-url" ? platformImageSrc(sourceImages[i]) : await imageToDataUrl(sourceImages[i]);
+    if (imageSrc) {
+      cloneImages[i].setAttribute("src", imageSrc);
     }
   }
   return clone.innerHTML.trim();
+}
+
+async function writeHtmlToClipboard(html) {
+  const copySource = document.createElement("div");
+  copySource.style.position = "fixed";
+  copySource.style.left = "-9999px";
+  copySource.innerHTML = html;
+  document.body.appendChild(copySource);
+  const blobHtml = new Blob([html], { type: "text/html" });
+  const blobText = new Blob([copySource.innerText], { type: "text/plain" });
+  await navigator.clipboard.write([
+    new ClipboardItem({
+      "text/html": blobHtml,
+      "text/plain": blobText,
+    }),
+  ]);
+  copySource.remove();
+}
+
+function selectAndCopyHtml(html) {
+  const copySource = document.createElement("div");
+  copySource.style.position = "fixed";
+  copySource.style.left = "-9999px";
+  copySource.innerHTML = html;
+  document.body.appendChild(copySource);
+  const range = document.createRange();
+  range.selectNodeContents(copySource);
+  const selection = window.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+  const copied = document.execCommand("copy");
+  selection.removeAllRanges();
+  copySource.remove();
+  return copied;
 }
 
 async function copyRichText() {
@@ -616,21 +695,8 @@ async function copyRichText() {
   }
 
   try {
-    const html = await buildClipboardHtml();
-    const copySource = document.createElement("div");
-    copySource.style.position = "fixed";
-    copySource.style.left = "-9999px";
-    copySource.innerHTML = html;
-    document.body.appendChild(copySource);
-    const blobHtml = new Blob([html], { type: "text/html" });
-    const blobText = new Blob([copySource.innerText], { type: "text/plain" });
-    await navigator.clipboard.write([
-      new ClipboardItem({
-        "text/html": blobHtml,
-        "text/plain": blobText,
-      }),
-    ]);
-    copySource.remove();
+    const html = await buildClipboardHtml({ imageMode: "data-url" });
+    await writeHtmlToClipboard(html);
     setStatus("公众号富文本已复制。现在直接粘贴到微信公众号编辑器，不需要再进壹伴转 HTML。");
   } catch (error) {
     const range = document.createRange();
@@ -640,6 +706,37 @@ async function copyRichText() {
     selection.addRange(range);
     document.execCommand("copy");
     setStatus("已选中并复制预览区；如果浏览器拦截，请按 Cmd+C 再粘贴到公众号。");
+  }
+}
+
+async function copyZhihuRichText() {
+  const richHtml = currentRichHtml();
+  if (richHtml) {
+    try {
+      await writeHtmlToClipboard(richHtml);
+      setStatus("知乎版已复制飞书原始富文本。现在粘贴到知乎，图片/GIF 会尽量沿用飞书剪贴板格式。");
+      return;
+    } catch (error) {
+      if (selectAndCopyHtml(richHtml)) {
+        setStatus("知乎版已用兼容方式复制飞书原始富文本。现在粘贴到知乎。");
+        return;
+      }
+    }
+  }
+  if (!lastContentHtml.trim() && !el.preview.innerHTML.trim()) {
+    setStatus("还没有可复制的排版内容。", true);
+    return;
+  }
+  const html = await buildClipboardHtml({ imageMode: "zhihu" });
+  try {
+    await writeHtmlToClipboard(html);
+    setStatus("知乎版已复制。本地图片已转成占位提示，请在知乎里用图片按钮按占位上传原图/GIF。");
+  } catch (error) {
+    if (selectAndCopyHtml(html)) {
+      setStatus("知乎版已用兼容方式复制。本地图片已转成占位提示，请在知乎里用图片按钮上传原图/GIF。");
+      return;
+    }
+    setStatus("知乎版复制失败。请确认浏览器允许剪贴板权限，或先点预览区后手动 Cmd+C。", true);
   }
 }
 
@@ -807,6 +904,7 @@ el.feishuUrl.addEventListener("keydown", (event) => {
 });
 el.loadSample.addEventListener("click", loadSample);
 el.copyRich.addEventListener("click", copyRichText);
+el.copyZhihu.addEventListener("click", copyZhihuRichText);
 el.copyHtml.addEventListener("click", copyHtml);
 el.copyMarkdown.addEventListener("click", copyConvertedMarkdown);
 el.exportCard.addEventListener("click", exportLongCard);

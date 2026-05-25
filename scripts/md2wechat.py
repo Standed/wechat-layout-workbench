@@ -26,6 +26,7 @@ import sys
 import os
 import argparse
 import webbrowser
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -179,7 +180,7 @@ def md_to_html_body(md_body: str, theme: dict, preserve_paragraphs: bool = False
                 in_code_block = False
                 code_html = '<br/>'.join(escape_html(line) or '&nbsp;' for line in code_lines)
                 raw_label = (code_lang or '').strip()
-                generic_labels = {'', 'text', 'plain', 'plaintext', 'plain text'}
+                generic_labels = {'', 'text', 'plain', 'plaintext', 'plain text', 'markdown', 'md'}
                 code_label = '' if raw_label.lower() in generic_labels else escape_html(raw_label)
                 label_html = (
                     f'<span style="display: inline-block; margin-left: 10px; font-size: 13px; '
@@ -194,12 +195,12 @@ def md_to_html_body(md_body: str, theme: dict, preserve_paragraphs: bool = False
                     f'box-shadow: rgba(20, 28, 38, 0.18) 0 8px 22px;">'
                     f'<section style="height: 34px; padding: 0 16px; background-color: rgb(36, 42, 51); '
                     f'box-sizing: border-box; font-size: 0; line-height: 34px; white-space: nowrap;">'
-                    f'<span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; '
-                    f'background-color: rgb(255, 95, 87); margin-right: 8px; vertical-align: middle;"></span>'
-                    f'<span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; '
-                    f'background-color: rgb(255, 189, 46); margin-right: 8px; vertical-align: middle;"></span>'
-                    f'<span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; '
-                    f'background-color: rgb(40, 201, 64); vertical-align: middle;"></span>'
+                    f'<span style="display: inline-block; margin-right: 6px; color: rgb(255, 95, 87); '
+                    f'font-size: 13px; line-height: 34px; vertical-align: middle;">●</span>'
+                    f'<span style="display: inline-block; margin-right: 6px; color: rgb(255, 189, 46); '
+                    f'font-size: 13px; line-height: 34px; vertical-align: middle;">●</span>'
+                    f'<span style="display: inline-block; color: rgb(40, 201, 64); '
+                    f'font-size: 13px; line-height: 34px; vertical-align: middle;">●</span>'
                     f'{label_html}'
                     f'</section>'
                     f'<section style="padding: 14px 18px 18px 18px; background-color: rgb(36, 42, 51); '
@@ -224,6 +225,9 @@ def md_to_html_body(md_body: str, theme: dict, preserve_paragraphs: bool = False
 
         # ── HTML 注释（如 <!-- digest: ... -->）────
         if stripped.startswith('<!--') and stripped.endswith('-->'):
+            grid_match = re.match(r'^<!--\s*feishu-grid:(.*?)\s*-->$', stripped)
+            if grid_match:
+                html_parts.append(make_feishu_image_grid(grid_match.group(1), theme))
             i += 1
             continue
 
@@ -520,6 +524,62 @@ def md_to_html_body(md_body: str, theme: dict, preserve_paragraphs: bool = False
         i += 1
 
     return ''.join(html_parts)
+
+
+def make_feishu_image_grid(payload: str, theme: dict) -> str:
+    try:
+        columns = json.loads(payload)
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(columns, list):
+        return ""
+    image_columns = []
+    for column in columns:
+        if not isinstance(column, dict):
+            continue
+        images = column.get("images") or []
+        if not images:
+            continue
+        image = images[0]
+        src = str(image.get("src") or "").strip()
+        if not src:
+            continue
+        try:
+            width = max(0.15, min(float(column.get("width") or 0.5), 1.0)) * 100
+        except (TypeError, ValueError):
+            width = 50
+        image_columns.append({
+            "width": width,
+            "src": src,
+            "alt": str(image.get("alt") or "飞书图片").strip() or "飞书图片",
+        })
+    if not image_columns:
+        return ""
+
+    cells = []
+    for column in image_columns:
+        src = escape_attr(column["src"])
+        alt = escape_attr(column["alt"])
+        image_attrs = (
+            f'data-local-src="{src}" src=""'
+            if not re.match(r'^(https?://|data:image/)', column["src"])
+            else f'src="{src}"'
+        )
+        cells.append(
+            f'<section style="display: table-cell; width: {column["width"]:.3f}%; '
+            f'vertical-align: top; padding: 0 4px; box-sizing: border-box;">'
+            f'<img {image_attrs} alt="{alt}" style="display: inline-block; width: 100%; '
+            f'max-width: 100%; height: auto; border-radius: 10px; '
+            f'box-shadow: rgba(20, 28, 38, 0.14) 0 6px 18px; '
+            f'background-color: transparent;"/>'
+            f'</section>'
+        )
+
+    return (
+        '<section style="margin: 16px -4px 18px -4px; display: table; width: 100%; '
+        'table-layout: fixed; border-spacing: 0;">'
+        f'{"".join(cells)}</section>'
+    )
 
 
 def is_image_caption(text: str) -> bool:
