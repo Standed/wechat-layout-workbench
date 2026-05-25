@@ -42,6 +42,7 @@ const el = {
   status: document.querySelector("#status"),
   convert: document.querySelector("#convert"),
   copyRich: document.querySelector("#copyRich"),
+  copyPlatform: document.querySelector("#copyPlatform"),
   copyHtml: document.querySelector("#copyHtml"),
   copyMarkdown: document.querySelector("#copyMarkdown"),
   exportCard: document.querySelector("#exportCard"),
@@ -591,7 +592,23 @@ async function imageToDataUrl(image) {
   }
 }
 
-async function buildClipboardHtml() {
+function absoluteUrl(src) {
+  try {
+    return new URL(src, window.location.href).href;
+  } catch (error) {
+    return src;
+  }
+}
+
+function platformImageSrc(image) {
+  const src = image.getAttribute("src") || "";
+  if (!src || src.startsWith("data:image/")) {
+    return src;
+  }
+  return absoluteUrl(src);
+}
+
+async function buildClipboardHtml({ imageMode = "data-url" } = {}) {
   const clone = el.preview.cloneNode(true);
   clone.removeAttribute("id");
   clone.removeAttribute("contenteditable");
@@ -601,12 +618,29 @@ async function buildClipboardHtml() {
   const sourceImages = Array.from(el.preview.querySelectorAll("img"));
   const cloneImages = Array.from(clone.querySelectorAll("img"));
   for (let i = 0; i < sourceImages.length; i += 1) {
-    const dataUrl = await imageToDataUrl(sourceImages[i]);
-    if (dataUrl) {
-      cloneImages[i].setAttribute("src", dataUrl);
+    const imageSrc = imageMode === "platform-url" ? platformImageSrc(sourceImages[i]) : await imageToDataUrl(sourceImages[i]);
+    if (imageSrc) {
+      cloneImages[i].setAttribute("src", imageSrc);
     }
   }
   return clone.innerHTML.trim();
+}
+
+async function writeHtmlToClipboard(html) {
+  const copySource = document.createElement("div");
+  copySource.style.position = "fixed";
+  copySource.style.left = "-9999px";
+  copySource.innerHTML = html;
+  document.body.appendChild(copySource);
+  const blobHtml = new Blob([html], { type: "text/html" });
+  const blobText = new Blob([copySource.innerText], { type: "text/plain" });
+  await navigator.clipboard.write([
+    new ClipboardItem({
+      "text/html": blobHtml,
+      "text/plain": blobText,
+    }),
+  ]);
+  copySource.remove();
 }
 
 async function copyRichText() {
@@ -616,21 +650,8 @@ async function copyRichText() {
   }
 
   try {
-    const html = await buildClipboardHtml();
-    const copySource = document.createElement("div");
-    copySource.style.position = "fixed";
-    copySource.style.left = "-9999px";
-    copySource.innerHTML = html;
-    document.body.appendChild(copySource);
-    const blobHtml = new Blob([html], { type: "text/html" });
-    const blobText = new Blob([copySource.innerText], { type: "text/plain" });
-    await navigator.clipboard.write([
-      new ClipboardItem({
-        "text/html": blobHtml,
-        "text/plain": blobText,
-      }),
-    ]);
-    copySource.remove();
+    const html = await buildClipboardHtml({ imageMode: "data-url" });
+    await writeHtmlToClipboard(html);
     setStatus("公众号富文本已复制。现在直接粘贴到微信公众号编辑器，不需要再进壹伴转 HTML。");
   } catch (error) {
     const range = document.createRange();
@@ -640,6 +661,20 @@ async function copyRichText() {
     selection.addRange(range);
     document.execCommand("copy");
     setStatus("已选中并复制预览区；如果浏览器拦截，请按 Cmd+C 再粘贴到公众号。");
+  }
+}
+
+async function copyPlatformRichText() {
+  if (!lastContentHtml.trim() && !el.preview.innerHTML.trim()) {
+    setStatus("还没有可复制的排版内容。", true);
+    return;
+  }
+  try {
+    const html = await buildClipboardHtml({ imageMode: "platform-url" });
+    await writeHtmlToClipboard(html);
+    setStatus("图文平台版已复制。知乎等平台可能仍要求图片重新上传；如果看到图片导入失败，请用平台图片按钮上传原图/GIF。");
+  } catch (error) {
+    setStatus("图文平台版复制失败，请先重新生成预览。", true);
   }
 }
 
@@ -807,6 +842,7 @@ el.feishuUrl.addEventListener("keydown", (event) => {
 });
 el.loadSample.addEventListener("click", loadSample);
 el.copyRich.addEventListener("click", copyRichText);
+el.copyPlatform.addEventListener("click", copyPlatformRichText);
 el.copyHtml.addEventListener("click", copyHtml);
 el.copyMarkdown.addEventListener("click", copyConvertedMarkdown);
 el.exportCard.addEventListener("click", exportLongCard);
