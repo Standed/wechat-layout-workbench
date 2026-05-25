@@ -180,7 +180,7 @@ def md_to_html_body(md_body: str, theme: dict, preserve_paragraphs: bool = False
                 in_code_block = False
                 code_html = '<br/>'.join(escape_html(line) or '&nbsp;' for line in code_lines)
                 raw_label = (code_lang or '').strip()
-                generic_labels = {'', 'text', 'plain', 'plaintext', 'plain text'}
+                generic_labels = {'', 'text', 'plain', 'plaintext', 'plain text', 'markdown', 'md'}
                 code_label = '' if raw_label.lower() in generic_labels else escape_html(raw_label)
                 label_html = (
                     f'<span style="display: inline-block; margin-left: 10px; font-size: 13px; '
@@ -195,12 +195,12 @@ def md_to_html_body(md_body: str, theme: dict, preserve_paragraphs: bool = False
                     f'box-shadow: rgba(20, 28, 38, 0.18) 0 8px 22px;">'
                     f'<section style="height: 34px; padding: 0 16px; background-color: rgb(36, 42, 51); '
                     f'box-sizing: border-box; font-size: 0; line-height: 34px; white-space: nowrap;">'
-                    f'<span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; '
-                    f'background-color: rgb(255, 95, 87); margin-right: 8px; vertical-align: middle;"></span>'
-                    f'<span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; '
-                    f'background-color: rgb(255, 189, 46); margin-right: 8px; vertical-align: middle;"></span>'
-                    f'<span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; '
-                    f'background-color: rgb(40, 201, 64); vertical-align: middle;"></span>'
+                    f'<span style="display: inline-block; margin-right: 8px; color: rgb(255, 95, 87); '
+                    f'font-size: 18px; line-height: 34px; vertical-align: middle;">●</span>'
+                    f'<span style="display: inline-block; margin-right: 8px; color: rgb(255, 189, 46); '
+                    f'font-size: 18px; line-height: 34px; vertical-align: middle;">●</span>'
+                    f'<span style="display: inline-block; color: rgb(40, 201, 64); '
+                    f'font-size: 18px; line-height: 34px; vertical-align: middle;">●</span>'
                     f'{label_html}'
                     f'</section>'
                     f'<section style="padding: 14px 18px 18px 18px; background-color: rgb(36, 42, 51); '

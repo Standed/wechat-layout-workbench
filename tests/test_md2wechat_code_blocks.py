@@ -20,6 +20,15 @@ def test_plain_text_code_block_hides_default_label():
     html = md2wechat.md_to_html_body("```Plain Text\nhello\n```", theme)
     assert "Plain Text" not in html
     assert "rgb(36, 42, 51)" in html
+    assert html.count("●") == 3
+
+
+def test_markdown_code_block_hides_default_label():
+    md2wechat = load_md2wechat_module()
+    theme = md2wechat.ACCOUNT_THEMES[md2wechat.DEFAULT_ACCOUNT]
+    html = md2wechat.md_to_html_body("```Markdown\nhello\n```", theme)
+    assert "Markdown" not in html
+    assert html.count("●") == 3
 
 
 def test_named_code_block_keeps_custom_label():
