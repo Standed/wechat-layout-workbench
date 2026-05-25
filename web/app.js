@@ -42,7 +42,7 @@ const el = {
   status: document.querySelector("#status"),
   convert: document.querySelector("#convert"),
   copyRich: document.querySelector("#copyRich"),
-  copyPlatform: document.querySelector("#copyPlatform"),
+  copyZhihu: document.querySelector("#copyZhihu"),
   copyHtml: document.querySelector("#copyHtml"),
   copyMarkdown: document.querySelector("#copyMarkdown"),
   exportCard: document.querySelector("#exportCard"),
@@ -643,6 +643,23 @@ async function writeHtmlToClipboard(html) {
   copySource.remove();
 }
 
+function selectAndCopyHtml(html) {
+  const copySource = document.createElement("div");
+  copySource.style.position = "fixed";
+  copySource.style.left = "-9999px";
+  copySource.innerHTML = html;
+  document.body.appendChild(copySource);
+  const range = document.createRange();
+  range.selectNodeContents(copySource);
+  const selection = window.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+  const copied = document.execCommand("copy");
+  selection.removeAllRanges();
+  copySource.remove();
+  return copied;
+}
+
 async function copyRichText() {
   if (!lastContentHtml.trim() && !el.preview.innerHTML.trim()) {
     setStatus("还没有可复制的排版内容。", true);
@@ -664,17 +681,21 @@ async function copyRichText() {
   }
 }
 
-async function copyPlatformRichText() {
+async function copyZhihuRichText() {
   if (!lastContentHtml.trim() && !el.preview.innerHTML.trim()) {
     setStatus("还没有可复制的排版内容。", true);
     return;
   }
+  const html = await buildClipboardHtml({ imageMode: "platform-url" });
   try {
-    const html = await buildClipboardHtml({ imageMode: "platform-url" });
     await writeHtmlToClipboard(html);
-    setStatus("图文平台版已复制。知乎等平台可能仍要求图片重新上传；如果看到图片导入失败，请用平台图片按钮上传原图/GIF。");
+    setStatus("知乎版已复制。图片会尽量保留为 URL；如果知乎仍提示图片导入失败，请用知乎图片按钮上传原图/GIF。");
   } catch (error) {
-    setStatus("图文平台版复制失败，请先重新生成预览。", true);
+    if (selectAndCopyHtml(html)) {
+      setStatus("知乎版已用兼容方式复制。现在粘贴到知乎；如果图片导入失败，请用知乎图片按钮上传原图/GIF。");
+      return;
+    }
+    setStatus("知乎版复制失败。请确认浏览器允许剪贴板权限，或先点预览区后手动 Cmd+C。", true);
   }
 }
 
@@ -842,7 +863,7 @@ el.feishuUrl.addEventListener("keydown", (event) => {
 });
 el.loadSample.addEventListener("click", loadSample);
 el.copyRich.addEventListener("click", copyRichText);
-el.copyPlatform.addEventListener("click", copyPlatformRichText);
+el.copyZhihu.addEventListener("click", copyZhihuRichText);
 el.copyHtml.addEventListener("click", copyHtml);
 el.copyMarkdown.addEventListener("click", copyConvertedMarkdown);
 el.exportCard.addEventListener("click", exportLongCard);
