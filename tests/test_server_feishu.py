@@ -105,6 +105,72 @@ def test_extract_feishu_document_preserves_image_grid_in_markdown():
     assert "right.jpg" in markdown
 
 
+def test_extract_feishu_document_preserves_complex_html_blocks():
+    server = load_server_module()
+    payload = {
+        "document": {
+            "title": "复杂飞书文档",
+            "content": (
+                "<blockquote><p>引用内容</p></blockquote>"
+                "<table><tr><th>能力</th><th>状态</th></tr><tr><td><strong>表格</strong></td><td>保留</td></tr></table>"
+                '<figure><video><source href="https://example.com/demo.mp4"/></video></figure>'
+                '<cite><a href="https://example.com/ref">引用文档</a></cite>'
+                '<p><cite title="无正文引用文档" type="doc"></cite></p>'
+            ),
+        }
+    }
+    result = server.extract_feishu_document(payload, "https://example.feishu.cn/docx/AbCd")
+    markdown = result["markdown"]
+
+    assert "> 引用内容" in markdown
+    assert "> \n\n引用内容" not in markdown
+    assert "| 能力 | 状态 |" in markdown
+    assert "| **表格** | 保留 |" in markdown
+    assert "![飞书视频](https://example.com/demo.mp4)" in markdown
+    assert "> 引用：[引用文档](https://example.com/ref)" in markdown
+    assert "> 引用：无正文引用文档" in markdown
+
+
+def test_extract_feishu_document_grid_keeps_video_source():
+    server = load_server_module()
+    payload = {
+        "document": {
+            "title": "飞书标题",
+            "content": '<grid><column width-ratio="0.5"><video><source href="https://example.com/left.mp4"/></video></column>'
+            '<column width-ratio="0.5"><img src="right.jpg" name="right.jpg"/></column></grid>',
+        }
+    }
+    result = server.extract_feishu_document(payload, "https://example.feishu.cn/docx/AbCd")
+    markdown = result["markdown"]
+
+    assert "<!-- feishu-grid:" in markdown
+    assert "left.mp4" in markdown
+    assert '"type":"video"' in markdown
+    assert "right.jpg" in markdown
+
+
+def test_extract_feishu_document_continues_split_ordered_lists():
+    server = load_server_module()
+    payload = {
+        "document": {
+            "title": "飞书标题",
+            "content": (
+                "<ol><li seq=\"auto\">第一项</li></ol>"
+                "<ol><li seq=\"auto\">第二项</li></ol>"
+                "<ol><li seq=\"auto\">第三项</li></ol>"
+                "<p>普通段落</p>"
+                "<ol><li seq=\"1\">重新开始</li></ol>"
+            ),
+        }
+    }
+    markdown = server.extract_feishu_document(payload, "https://example.feishu.cn/docx/AbCd")["markdown"]
+
+    assert "1. 第一项" in markdown
+    assert "2. 第二项" in markdown
+    assert "3. 第三项" in markdown
+    assert "1. 重新开始" in markdown
+
+
 def test_feishu_doc_id_accepts_openapi_query_params():
     server = load_server_module()
 
@@ -119,6 +185,35 @@ def test_image_extension_keeps_gif_by_content_type_and_file_header():
     assert server.image_extension("image/gif") == ".gif"
     assert server.image_extension("application/octet-stream", b"GIF89a...") == ".gif"
     assert server.image_extension("application/octet-stream", b"RIFFxxxxWEBP...") == ".webp"
+
+
+def test_attach_r2_image_sources_adds_public_url_for_feishu_media(monkeypatch, tmp_path):
+    server = load_server_module()
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    media_dir = server.ROOT / "output" / "_feishu_media" / "Doc123"
+    media_dir.mkdir(parents=True, exist_ok=True)
+    image_path = media_dir / "image-token.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+
+    monkeypatch.setattr(server, "r2_config", lambda: {"configured": True})
+    monkeypatch.setattr(server, "upload_file_to_r2", lambda path: "https://assets.example.com/temp/image-token.png")
+
+    html = '<section><img data-local-src="output/_feishu_media/Doc123/image-token.png" src="" alt="飞书图片"/></section>'
+    result = server.attach_r2_image_sources(html)
+
+    assert 'data-local-src="output/_feishu_media/Doc123/image-token.png"' in result
+    assert 'data-r2-src="https://assets.example.com/temp/image-token.png"' in result
+
+
+def test_attach_r2_image_sources_ignores_non_feishu_local_images(monkeypatch):
+    server = load_server_module()
+
+    monkeypatch.setattr(server, "r2_config", lambda: {"configured": True})
+    monkeypatch.setattr(server, "upload_file_to_r2", lambda path: (_ for _ in ()).throw(AssertionError("should not upload")))
+
+    html = '<img data-local-src="output/main/images/example.png" src="" alt="本地图"/>'
+
+    assert server.attach_r2_image_sources(html) == html
 
 
 def test_fetch_feishu_document_openapi_converts_blocks_and_grid(monkeypatch):
@@ -178,6 +273,43 @@ def test_fetch_feishu_document_openapi_converts_blocks_and_grid(monkeypatch):
     assert "left-token.jpg" in result["markdown"]
     assert "right-token.jpg" in result["markdown"]
     assert any("/blocks?" in call for call in calls)
+
+
+def test_feishu_blocks_to_markdown_rebuilds_table_cells():
+    server = load_server_module()
+    blocks = [
+        {"block_id": "page", "block_type": 1, "children": ["table"]},
+        {"block_id": "table", "block_type": 31, "table": {"column_size": 2}, "children": ["a1", "a2", "b1", "b2"]},
+        {"block_id": "a1", "block_type": 32, "table_cell": {"row_index": 0, "column_index": 0, "elements": [{"text_run": {"content": "能力"}}]}},
+        {"block_id": "a2", "block_type": 32, "table_cell": {"row_index": 0, "column_index": 1, "elements": [{"text_run": {"content": "状态"}}]}},
+        {"block_id": "b1", "block_type": 32, "table_cell": {"row_index": 1, "column_index": 0, "elements": [{"text_run": {"content": "表格"}}]}},
+        {"block_id": "b2", "block_type": 32, "table_cell": {"row_index": 1, "column_index": 1, "elements": [{"text_run": {"content": "保留"}}]}},
+    ]
+
+    markdown = server.feishu_blocks_to_markdown(blocks, "tenant-token", "Doc123")
+
+    assert "| 能力 | 状态 |" in markdown
+    assert "| 表格 | 保留 |" in markdown
+
+
+def test_feishu_blocks_to_markdown_continues_ordered_blocks():
+    server = load_server_module()
+    blocks = [
+        {"block_id": "page", "block_type": 1, "children": ["o1", "o2", "o3", "p1", "o4"]},
+        {"block_id": "o1", "block_type": 13, "ordered": {"elements": [{"text_run": {"content": "第一项"}}]}},
+        {"block_id": "o2", "block_type": 13, "ordered": {"elements": [{"text_run": {"content": "第二项"}}]}},
+        {"block_id": "o3", "block_type": 13, "ordered": {"elements": [{"text_run": {"content": "第三项"}}]}},
+        {"block_id": "p1", "block_type": 2, "text": {"elements": [{"text_run": {"content": "普通段落"}}]}},
+        {"block_id": "o4", "block_type": 13, "ordered": {"seq": 1, "elements": [{"text_run": {"content": "重新开始"}}]}},
+    ]
+
+    markdown = server.feishu_blocks_to_markdown(blocks, "tenant-token", "Doc123")
+
+    assert "1. 第一项" in markdown
+    assert "2. 第二项" in markdown
+    assert "3. 第三项" in markdown
+    assert "普通段落" in markdown
+    assert "1. 重新开始" in markdown
 
 
 def test_fetch_feishu_document_prefers_openapi_when_configured(monkeypatch):

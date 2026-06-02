@@ -79,6 +79,19 @@ OPENAI_IMAGE_QUALITY=high
 FEISHU_APP_ID=飞书开放平台应用 app_id
 FEISHU_APP_SECRET=飞书开放平台应用 app_secret
 FEISHU_BASE_URL=https://open.feishu.cn/open-apis
+
+# 可选：公众号复制图片走 Cloudflare R2 公网 URL
+R2_BUCKET_NAME=你的 R2 bucket
+R2_ACCESS_KEY_ID=你的 R2 access key
+R2_SECRET_ACCESS_KEY=你的 R2 secret key
+R2_ENDPOINT=https://<account_id>.r2.cloudflarestorage.com
+NEXT_PUBLIC_R2_PUBLIC_URL=https://你的公开访问域名
+```
+
+本地开发时，如果这些 R2 环境变量没有直接配置，服务会自动尝试读取：
+
+```text
+/Users/shitengda/Downloads/docker/n8n/vibeAgent/finalAgent/video-agent-pro/.env.local
 ```
 
 ## 飞书导入
@@ -96,7 +109,7 @@ OpenAPI 模式原理：
 2. 服务端用 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 获取 `tenant_access_token`。
 3. 服务端读取 `/docx/v1/documents/{document_id}` 和 `/docx/v1/documents/{document_id}/blocks`。
 4. 服务端把 block 树转成 Markdown，并通过 `/drive/v1/medias/{token}/download` 下载图片到 `output/_feishu_media/`。
-5. 页面把 Markdown 转成公众号可复制富文本。
+5. 页面把 Markdown 转成公众号可复制富文本；如果 R2 已配置，飞书本地图片会补上 `data-r2-src`，复制到公众号时使用 R2 公网图源，避免大图文章塞进超大的 base64 剪贴板。
 
 飞书开放平台应用至少需要开通并发布：
 

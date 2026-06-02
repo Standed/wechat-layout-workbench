@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import hmac
 import mimetypes
 import os
 import re
@@ -67,6 +69,8 @@ COVER_STYLES = {
 }
 
 SETTINGS_PATH = ROOT / "config" / "workbench-settings.json"
+R2_CACHE_PATH = ROOT / "output" / "_feishu_media" / ".r2-cache.json"
+VIDEO_AGENT_PRO_ENV = ROOT.parent / "vibeAgent" / "finalAgent" / "video-agent-pro" / ".env.local"
 
 FONT_CANDIDATES = [
     "/System/Library/Fonts/STHeiti Medium.ttc",
@@ -100,6 +104,291 @@ def save_settings(settings: dict) -> None:
     SETTINGS_PATH.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def load_env_file(path: Path, keys: set[str]) -> None:
+    if not path.exists():
+        return
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, value = line.split("=", 1)
+        name = name.strip()
+        if name not in keys or os.environ.get(name):
+            continue
+        os.environ[name] = value.strip().strip('"').strip("'")
+
+
+def ensure_r2_env_loaded() -> None:
+    keys = {"R2_BUCKET_NAME", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_ENDPOINT", "NEXT_PUBLIC_R2_PUBLIC_URL"}
+    custom_env = os.environ.get("R2_ENV_FILE", "").strip()
+    if custom_env:
+        load_env_file(Path(custom_env).expanduser(), keys)
+    load_env_file(VIDEO_AGENT_PRO_ENV, keys)
+
+
+def r2_config() -> dict:
+    ensure_r2_env_loaded()
+    config = {
+        "bucket": os.environ.get("R2_BUCKET_NAME", "").strip(),
+        "accessKeyId": os.environ.get("R2_ACCESS_KEY_ID", "").strip(),
+        "secretAccessKey": os.environ.get("R2_SECRET_ACCESS_KEY", "").strip(),
+        "endpoint": os.environ.get("R2_ENDPOINT", "").strip().rstrip("/"),
+        "publicUrl": os.environ.get("NEXT_PUBLIC_R2_PUBLIC_URL", "").strip().rstrip("/"),
+    }
+    config["configured"] = all(config.values())
+    return config
+
+
+def r2_health() -> dict:
+    config = r2_config()
+    missing = []
+    labels = {
+        "bucket": "R2_BUCKET_NAME",
+        "accessKeyId": "R2_ACCESS_KEY_ID",
+        "secretAccessKey": "R2_SECRET_ACCESS_KEY",
+        "endpoint": "R2_ENDPOINT",
+        "publicUrl": "NEXT_PUBLIC_R2_PUBLIC_URL",
+    }
+    for key, label in labels.items():
+        if not config.get(key):
+            missing.append(label)
+    return {
+        "ok": config["configured"],
+        "configured": config["configured"],
+        "publicUrl": config["publicUrl"] if config["publicUrl"] else "",
+        "envFallback": str(VIDEO_AGENT_PRO_ENV) if VIDEO_AGENT_PRO_ENV.exists() else "",
+        "missing": missing,
+        "error": "" if config["configured"] else "未配置 Cloudflare R2，公众号复制会回退为 data URL 图片。",
+    }
+
+
+def r2_cache() -> dict:
+    if not R2_CACHE_PATH.exists():
+        return {}
+    try:
+        return json.loads(R2_CACHE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_r2_cache(cache: dict) -> None:
+    R2_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    R2_CACHE_PATH.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def aws_signing_key(secret: str, date_stamp: str, region: str = "auto", service: str = "s3") -> bytes:
+    key = ("AWS4" + secret).encode("utf-8")
+    for value in (date_stamp, region, service, "aws4_request"):
+        key = hmac.new(key, value.encode("utf-8"), hashlib.sha256).digest()
+    return key
+
+
+def public_r2_url(public_url: str, key: str) -> str:
+    return f"{public_url.rstrip('/')}/{quote(key, safe='/~')}"
+
+
+def canonical_query(params: dict[str, str]) -> str:
+    return "&".join(
+        f"{quote(str(name), safe='-_.~')}={quote(str(value), safe='-_.~')}"
+        for name, value in sorted(params.items())
+    )
+
+
+def presigned_r2_get_url(config: dict, key: str, expires: int = 604800) -> str | None:
+    parsed = urlparse(config["endpoint"])
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return None
+    expires = max(60, min(int(expires), 604800))
+    date_stamp = time.strftime("%Y%m%d", time.gmtime())
+    amz_date = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    credential_scope = f"{date_stamp}/auto/s3/aws4_request"
+    canonical_uri = f"/{quote(config['bucket'], safe='')}/{quote(key, safe='/~')}"
+    params = {
+        "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
+        "X-Amz-Credential": f"{config['accessKeyId']}/{credential_scope}",
+        "X-Amz-Date": amz_date,
+        "X-Amz-Expires": str(expires),
+        "X-Amz-SignedHeaders": "host",
+    }
+    query = canonical_query(params)
+    canonical_request = "\n".join(["GET", canonical_uri, query, f"host:{parsed.netloc}\n", "host", "UNSIGNED-PAYLOAD"])
+    string_to_sign = "\n".join([
+        "AWS4-HMAC-SHA256",
+        amz_date,
+        credential_scope,
+        hashlib.sha256(canonical_request.encode("utf-8")).hexdigest(),
+    ])
+    signature = hmac.new(
+        aws_signing_key(config["secretAccessKey"], date_stamp),
+        string_to_sign.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{config['endpoint']}{canonical_uri}?{query}&X-Amz-Signature={signature}"
+
+
+def r2_url_accessible(url: str) -> bool:
+    if not url:
+        return False
+    try:
+        request = urllib.request.Request(url, method="HEAD")
+        with urllib.request.urlopen(request, timeout=20) as response:
+            return 200 <= response.status < 300
+    except Exception:
+        return False
+
+
+def cached_r2_url(cache: dict, rel: str, digest: str, config: dict) -> str | None:
+    cached = cache.get(rel)
+    if not cached or cached.get("sha256") != digest:
+        return None
+    if cached.get("mode") == "signed":
+        try:
+            expires_at = float(cached.get("expiresAtEpoch") or 0)
+        except (TypeError, ValueError):
+            expires_at = 0
+        if cached.get("url") and expires_at > time.time() + 3600:
+            return cached["url"]
+    if cached.get("mode") == "public" and cached.get("url"):
+        return cached["url"]
+    if cached.get("url") and "X-Amz-Signature=" not in cached["url"] and r2_url_accessible(cached["url"]):
+        cached["mode"] = "public"
+        return cached["url"]
+    key = cached.get("key")
+    if key:
+        signed_url = presigned_r2_get_url(config, key)
+        if signed_url:
+            cached.update({
+                "url": signed_url,
+                "mode": "signed",
+                "expiresAtEpoch": time.time() + 604800,
+                "signedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            })
+            save_r2_cache(cache)
+            return signed_url
+    return None
+
+
+def r2_key_for_file(path: Path, body: bytes) -> str:
+    rel = path.relative_to(ROOT).as_posix()
+    parts = rel.split("/")
+    doc_id = parts[2] if len(parts) >= 4 and parts[:2] == ["output", "_feishu_media"] else "misc"
+    digest = hashlib.sha256(body).hexdigest()[:16]
+    ext = image_extension(mimetypes.guess_type(path.name)[0] or "", body).lstrip(".")
+    stem = re.sub(r"[^A-Za-z0-9_-]+", "-", path.stem).strip("-")[:36] or "image"
+    return f"temp/wechat-layout/{time.strftime('%Y/%m/%d')}/{doc_id}/{digest}-{stem}.{ext}"
+
+
+def upload_file_to_r2(path: Path) -> str | None:
+    config = r2_config()
+    if not config["configured"] or not path.is_file():
+        return None
+    body = path.read_bytes()
+    digest = hashlib.sha256(body).hexdigest()
+    rel = path.relative_to(ROOT).as_posix()
+    cache = r2_cache()
+    cached_url = cached_r2_url(cache, rel, digest, config)
+    if cached_url:
+        return cached_url
+
+    key = r2_key_for_file(path, body)
+    parsed = urlparse(config["endpoint"])
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return None
+    content_type = mimetypes.guess_type(path.name)[0] or f"image/{image_extension('', body).lstrip('.')}"
+    payload_hash = hashlib.sha256(body).hexdigest()
+    date_stamp = time.strftime("%Y%m%d", time.gmtime())
+    amz_date = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    canonical_uri = f"/{quote(config['bucket'], safe='')}/{quote(key, safe='/~')}"
+    headers = {
+        "cache-control": "public, max-age=604800",
+        "content-type": content_type,
+        "host": parsed.netloc,
+        "x-amz-content-sha256": payload_hash,
+        "x-amz-date": amz_date,
+    }
+    signed_headers = ";".join(sorted(headers))
+    canonical_headers = "".join(f"{name}:{headers[name]}\n" for name in sorted(headers))
+    canonical_request = "\n".join(["PUT", canonical_uri, "", canonical_headers, signed_headers, payload_hash])
+    credential_scope = f"{date_stamp}/auto/s3/aws4_request"
+    string_to_sign = "\n".join([
+        "AWS4-HMAC-SHA256",
+        amz_date,
+        credential_scope,
+        hashlib.sha256(canonical_request.encode("utf-8")).hexdigest(),
+    ])
+    signature = hmac.new(
+        aws_signing_key(config["secretAccessKey"], date_stamp),
+        string_to_sign.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+    auth = (
+        "AWS4-HMAC-SHA256 "
+        f"Credential={config['accessKeyId']}/{credential_scope}, "
+        f"SignedHeaders={signed_headers}, Signature={signature}"
+    )
+    request = urllib.request.Request(
+        f"{config['endpoint']}{canonical_uri}",
+        data=body,
+        headers={**headers, "Authorization": auth},
+        method="PUT",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=90) as response:
+            if response.status not in (200, 201):
+                return None
+    except Exception:
+        return None
+    public_url = public_r2_url(config["publicUrl"], key)
+    if r2_url_accessible(public_url):
+        url = public_url
+        mode = "public"
+        expires_at = None
+    else:
+        url = presigned_r2_get_url(config, key)
+        mode = "signed"
+        expires_at = time.time() + 604800
+    if not url:
+        return None
+    cache[rel] = {
+        "sha256": digest,
+        "key": key,
+        "url": url,
+        "publicUrl": public_url,
+        "mode": mode,
+        "expiresAtEpoch": expires_at,
+        "uploadedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    save_r2_cache(cache)
+    return url
+
+
+def attach_r2_image_sources(html: str) -> str:
+    if 'data-local-src="' not in (html or ""):
+        return html
+    if not r2_config()["configured"]:
+        return html
+
+    def repl(match: re.Match) -> str:
+        tag = match.group(0)
+        local_match = re.search(r'\bdata-local-src="([^"]+)"', tag)
+        if not local_match or 'data-r2-src="' in tag:
+            return tag
+        rel = unescape(local_match.group(1))
+        if not rel.startswith("output/_feishu_media/"):
+            return tag
+        path = (ROOT / rel).resolve()
+        if ROOT not in path.parents or not path.is_file():
+            return tag
+        url = upload_file_to_r2(path)
+        if not url:
+            return tag
+        suffix = "/>" if tag.endswith("/>") else ">"
+        base = tag[:-2] if suffix == "/>" else tag[:-1]
+        return base + f' data-r2-src="{sanitize_attr_value(url)}"{suffix}'
+
+    return re.sub(r"<img\b[^>]*>", repl, html or "", flags=re.I)
+
+
 def markdown_fragment_to_html(markdown: str, theme: dict) -> str:
     text = markdown.strip()
     if not text:
@@ -129,10 +418,12 @@ def convert_markdown(markdown: str, account: str, preserve_paragraphs: bool = Fa
         parsed["title"] = "未命名文章"
     theme = theme_for_account(account)
     full_html = md2wechat.build_full_html(parsed, theme)
+    content_html = attach_r2_image_sources(content_from_full_html(full_html))
+    full_html = attach_r2_image_sources(full_html)
     return {
         "title": parsed["title"],
         "account": account,
-        "contentHtml": content_from_full_html(full_html),
+        "contentHtml": content_html,
         "fullHtml": full_html,
     }
 
@@ -145,7 +436,7 @@ SAFE_HTML_TAGS = {
 }
 
 SAFE_HTML_ATTRS = {
-    "alt", "class", "colspan", "data-local-src", "height", "href", "name", "rowspan",
+    "alt", "class", "colspan", "data-local-src", "data-r2-src", "height", "href", "name", "rowspan",
     "src", "style", "target", "title", "width",
 }
 
@@ -359,6 +650,7 @@ def rich_content_html(raw_html: str, account: str) -> dict:
         'word-break: break-word; margin-bottom: 16px;">'
         f"{header}{clean_html}{footer}</section>"
     )
+    content_html = attach_r2_image_sources(content_html)
     return {
         "title": title_from_rich_html(raw_html),
         "account": account,
@@ -852,27 +1144,113 @@ def blockquote_markdown(markdown: str) -> str:
     return "\n".join(f"> {line}" for line in str(markdown or "").splitlines() if line.strip()).strip()
 
 
-def table_markdown(block: dict) -> str:
-    table = block.get("table") or {}
-    rows = table.get("rows") or table.get("cells") or []
+def markdown_table_from_rows(rows: list[list[str]]) -> str:
     if not rows or not isinstance(rows, list) or not isinstance(rows[0], list):
         return ""
     normalized = [
-        [markdown_text(cell.get("text") if isinstance(cell, dict) else cell).strip() for cell in row]
+        [markdown_text(cell.get("text") if isinstance(cell, dict) else cell).strip().replace("|", "\\|") for cell in row]
         for row in rows
     ]
     head, *body = normalized
+    col_count = max(len(head), *(len(row) for row in body)) if body else len(head)
+    if not col_count:
+        return ""
+    head = head + [""] * (col_count - len(head))
     return "\n".join([
         f"| {' | '.join(head)} |",
         f"| {' | '.join('---' for _ in head)} |",
-        *(f"| {' | '.join(row)} |" for row in body),
+        *(f"| {' | '.join(row + [''] * (col_count - len(row)))} |" for row in body),
     ])
+
+
+def table_markdown(block: dict) -> str:
+    table = block.get("table") or {}
+    rows = table.get("rows") or table.get("cells") or []
+    return markdown_table_from_rows(rows)
+
+
+def table_cell_position(cell: dict, fallback_index: int, col_count: int) -> tuple[int, int]:
+    carrier = block_carrier(cell)
+    row = carrier.get("row_index") or carrier.get("rowIndex") or carrier.get("row") or carrier.get("row_idx")
+    col = carrier.get("column_index") or carrier.get("columnIndex") or carrier.get("column") or carrier.get("col") or carrier.get("col_idx")
+    try:
+        row_index = max(0, int(row))
+    except (TypeError, ValueError):
+        row_index = fallback_index // max(1, col_count)
+    try:
+        col_index = max(0, int(col))
+    except (TypeError, ValueError):
+        col_index = fallback_index % max(1, col_count)
+    return row_index, col_index
+
+
+def table_block_markdown(block: dict, context: dict) -> str:
+    markdown = table_markdown(block)
+    if markdown:
+        return markdown
+    cells = child_blocks(block, context)
+    if not cells:
+        return ""
+    carrier = block_carrier(block)
+    col_count = (
+        carrier.get("column_size")
+        or carrier.get("columnSize")
+        or carrier.get("columns")
+        or carrier.get("col_count")
+        or carrier.get("colCount")
+    )
+    try:
+        col_count = max(1, int(col_count))
+    except (TypeError, ValueError):
+        col_count = max(1, int(len(cells) ** 0.5))
+    rows: list[list[str]] = []
+    for index, cell in enumerate(cells):
+        context["visited"].add(block_id(cell))
+        row_index, col_index = table_cell_position(cell, index, col_count)
+        while len(rows) <= row_index:
+            rows.append([])
+        while len(rows[row_index]) <= col_index:
+            rows[row_index].append("")
+        cell_text = rich_text_from_block(cell) or children_to_markdown(cell, context)
+        rows[row_index][col_index] = cell_text
+    return markdown_table_from_rows(rows)
 
 
 def file_markdown(block: dict) -> str:
     file = block.get("file") or {}
     name = str(file.get("name") or file.get("file_name") or file.get("fileName") or "").strip()
     return f"飞书附件：{name}" if name else ""
+
+
+def ordered_value_from_block(block: dict, context: dict) -> int:
+    carrier = block_carrier(block)
+    explicit = (
+        carrier.get("seq")
+        or carrier.get("sequence")
+        or carrier.get("index")
+        or carrier.get("number")
+        or block.get("seq")
+    )
+    try:
+        value = int(explicit)
+        if value > 0:
+            if context.get("last_block_type") == "ordered" and value != 1:
+                value = max(context.get("ordered_next", 1), value)
+            context["ordered_next"] = value + 1
+            context["last_block_type"] = "ordered"
+            return value
+    except (TypeError, ValueError):
+        pass
+    value = context.get("ordered_next", 1) if context.get("last_block_type") == "ordered" else 1
+    context["ordered_next"] = value + 1
+    context["last_block_type"] = "ordered"
+    return value
+
+
+def mark_non_ordered_block(context: dict, type_name: str) -> None:
+    if type_name.startswith("heading") or type_name == "divider":
+        context["last_block_type"] = type_name or ""
+        context["ordered_next"] = 1
 
 
 def collect_grid_column_images(block: dict, context: dict) -> list[dict]:
@@ -924,38 +1302,52 @@ def block_to_markdown(block: dict, context: dict) -> str:
     type_name = block_type_name(block)
     text = rich_text_from_block(block)
     if type_name == "grid":
+        mark_non_ordered_block(context, type_name)
         return grid_to_markdown(block, context)
+    if type_name == "table":
+        mark_non_ordered_block(context, type_name)
+        return table_block_markdown(block, context)
     children = children_to_markdown(block, context)
     if type_name in ("page", "view", "column", "grid_column"):
         return children
     if type_name.startswith("heading"):
+        mark_non_ordered_block(context, type_name)
         level = min(int(type_name.replace("heading", "") or "2"), 4)
         return join_markdown_parts(f"{'#' * level} {text}".strip(), children)
     if type_name == "bullet":
+        mark_non_ordered_block(context, type_name)
         return join_markdown_parts(f"- {text}".strip(), children)
     if type_name == "ordered":
-        return join_markdown_parts(f"1. {text}".strip(), children)
+        marker = ordered_value_from_block(block, context)
+        return join_markdown_parts(f"{marker}. {text}".strip(), children)
     if type_name == "todo":
+        mark_non_ordered_block(context, type_name)
         return join_markdown_parts(f"- [ ] {text}".strip(), children)
     if type_name == "quote":
+        mark_non_ordered_block(context, type_name)
         return join_markdown_parts(blockquote_markdown(text), children)
     if type_name == "quote_container":
+        mark_non_ordered_block(context, type_name)
         return blockquote_markdown(children or text)
     if type_name == "callout":
+        mark_non_ordered_block(context, type_name)
         content = children or text
         return f"> {content}" if content else ""
     if type_name == "divider":
+        mark_non_ordered_block(context, type_name)
         return "---"
     if type_name == "code":
+        mark_non_ordered_block(context, type_name)
         return join_markdown_parts(f"```\n{plain_text_from_block(block)}\n```", children)
     if type_name == "image":
+        mark_non_ordered_block(context, type_name)
         token = image_token_from_block(block)
         media_path = download_feishu_media_openapi(token, context["outDir"], context["token"]) if token else None
         return join_markdown_parts(f"![飞书图片]({media_path})" if media_path else f"> 图片下载失败：{token}", children)
-    if type_name == "table":
-        return join_markdown_parts(table_markdown(block), children)
     if type_name == "file":
+        mark_non_ordered_block(context, type_name)
         return join_markdown_parts(file_markdown(block), children)
+    mark_non_ordered_block(context, type_name)
     return join_markdown_parts(text, children)
 
 
@@ -964,6 +1356,8 @@ def feishu_blocks_to_markdown(blocks: list[dict], tenant_token: str, doc_id: str
         **build_block_tree(blocks),
         "token": tenant_token,
         "outDir": ROOT / "output" / "_feishu_media" / doc_id,
+        "ordered_next": 1,
+        "last_block_type": "",
     }
     parts = [block_to_markdown(block, context) for block in context["roots"]]
     for block in blocks:
@@ -986,7 +1380,18 @@ class FeishuHtmlMarkdownParser(HTMLParser):
         self.ordered_stack: list[int] = []
         self.grid_stack: list[list[dict]] = []
         self.current_grid_column: dict | None = None
+        self.quote_stack: list[list[str]] = []
+        self.table_stack: list[dict] = []
         self.code_depth = 0
+        self.next_ordered_value = 1
+        self.last_block_kind = ""
+
+    def target_parts(self) -> list[str]:
+        if self.table_stack and self.table_stack[-1].get("current_cell") is not None:
+            return self.table_stack[-1]["current_cell"]
+        if self.quote_stack:
+            return self.quote_stack[-1]
+        return self.parts
 
     def text(self) -> str:
         text = "".join(self.parts)
@@ -997,23 +1402,98 @@ class FeishuHtmlMarkdownParser(HTMLParser):
 
     def append(self, value: str) -> None:
         if value:
-            self.parts.append(value)
+            self.target_parts().append(value)
 
     def ensure_block(self) -> None:
-        current = "".join(self.parts)
+        current = "".join(self.target_parts())
         if current and not current.endswith("\n\n"):
             self.append("\n" if current.endswith("\n") else "\n\n")
+
+    def remove_from_stack(self, tag: str) -> None:
+        if tag in self.stack:
+            self.stack.remove(tag)
+
+    def append_media(self, src: str, label: str = "飞书视频", media_type: str = "video") -> None:
+        src = (src or "").strip()
+        if not src:
+            return
+        item = {"src": src, "alt": clean_inline_text(label), "type": media_type}
+        if self.current_grid_column is not None:
+            self.current_grid_column["images"].append(item)
+            return
+        self.ensure_block()
+        self.append(f"![{item['alt']}]({src})")
+        self.ensure_block()
+        self.mark_non_ordered("media")
+
+    def mark_non_ordered(self, kind: str) -> None:
+        if not self.ordered_stack and (kind == "title" or re.match(r"^h[1-6]$", kind)):
+            self.last_block_kind = kind
+            self.next_ordered_value = 1
+
+    def finish_table_cell(self) -> None:
+        if not self.table_stack:
+            return
+        table = self.table_stack[-1]
+        cell_parts = table.get("current_cell")
+        if cell_parts is None:
+            return
+        cell_text = re.sub(r"\s+", " ", unescape("".join(cell_parts))).strip()
+        table.setdefault("current_row", []).append(cell_text)
+        table["current_cell"] = None
+
+    def finish_table_row(self) -> None:
+        if not self.table_stack:
+            return
+        table = self.table_stack[-1]
+        row = table.get("current_row")
+        if row:
+            table.setdefault("rows", []).append(row)
+        table["current_row"] = None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attrs_dict = {name.lower(): value or "" for name, value in attrs}
         tag = tag.lower()
         self.stack.append(tag)
+        if tag == "table":
+            self.ensure_block()
+            self.table_stack.append({"rows": [], "current_row": None, "current_cell": None})
+            self.mark_non_ordered("table")
+            return
+        if tag == "tr" and self.table_stack:
+            self.table_stack[-1]["current_row"] = []
+            return
+        if tag in ("td", "th") and self.table_stack:
+            self.table_stack[-1]["current_cell"] = []
+            return
+        if tag == "blockquote":
+            self.ensure_block()
+            self.quote_stack.append([])
+            self.mark_non_ordered("quote")
+            return
+        if tag == "cite":
+            self.ensure_block()
+            self.quote_stack.append([])
+            self.append("引用：")
+            title = attrs_dict.get("title") or attrs_dict.get("name") or ""
+            href = attrs_dict.get("href") or attrs_dict.get("url") or ""
+            if title:
+                self.append(f"[{clean_inline_text(title)}]({href})" if href else clean_inline_text(title))
+            return
+        if tag in ("video", "source"):
+            self.append_media(
+                attrs_dict.get("src") or attrs_dict.get("href") or "",
+                attrs_dict.get("title") or attrs_dict.get("name") or attrs_dict.get("alt") or "飞书视频",
+            )
+            return
         if tag in ("title", "p", "div"):
             self.ensure_block()
+            self.mark_non_ordered(tag)
             if tag == "title":
                 self.append("# ")
         elif tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
             self.ensure_block()
+            self.mark_non_ordered(tag)
             level = min(int(tag[1]), 3)
             self.append("#" * level + " ")
         elif tag == "br":
@@ -1030,7 +1510,13 @@ class FeishuHtmlMarkdownParser(HTMLParser):
             self.code_depth += 1
             self.append("`")
         elif tag == "ol":
-            start = int(attrs_dict.get("start") or "1") if (attrs_dict.get("start") or "1").isdigit() else 1
+            explicit_start = attrs_dict.get("start") or ""
+            if explicit_start.isdigit():
+                start = int(explicit_start)
+            elif self.last_block_kind == "ordered":
+                start = self.next_ordered_value
+            else:
+                start = 1
             self.ordered_stack.append(start)
         elif tag == "grid":
             self.ensure_block()
@@ -1041,15 +1527,19 @@ class FeishuHtmlMarkdownParser(HTMLParser):
         elif tag == "li":
             self.ensure_block()
             if self.ordered_stack:
-                value = attrs_dict.get("value")
-                marker = int(value) if value and value.isdigit() else self.ordered_stack[-1]
+                value = attrs_dict.get("value") or attrs_dict.get("seq") or ""
+                if value.isdigit():
+                    marker = int(value)
+                    if self.last_block_kind == "ordered" and marker != 1:
+                        marker = max(self.ordered_stack[-1], marker)
+                else:
+                    marker = self.ordered_stack[-1]
                 self.ordered_stack[-1] = marker + 1
+                self.next_ordered_value = marker + 1
                 self.append(f"{marker}. ")
             else:
+                self.mark_non_ordered("bullet")
                 self.append("- ")
-        elif tag == "blockquote":
-            self.ensure_block()
-            self.append("> ")
         elif tag == "a":
             self.link_stack.append(attrs_dict.get("href", ""))
             self.append("[")
@@ -1065,11 +1555,40 @@ class FeishuHtmlMarkdownParser(HTMLParser):
             self.ensure_block()
             self.append(f"![{clean_inline_text(name)}]({image_src})" if image_src else "> 飞书图片暂时无法下载")
             self.ensure_block()
+            self.mark_non_ordered("image")
 
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
-        if tag in ("title", "p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote"):
+        if tag in ("td", "th"):
+            self.finish_table_cell()
+            self.remove_from_stack(tag)
+            return
+        if tag == "tr":
+            self.finish_table_row()
+            self.remove_from_stack(tag)
+            return
+        if tag == "table" and self.table_stack:
+            table = self.table_stack.pop()
+            markdown = markdown_table_from_rows(table.get("rows") or [])
+            if markdown:
+                self.ensure_block()
+                self.append(markdown)
+                self.ensure_block()
+            self.remove_from_stack(tag)
+            return
+        if tag in ("blockquote", "cite") and self.quote_stack:
+            content = re.sub(r"\n{3,}", "\n\n", "".join(self.quote_stack.pop())).strip()
+            markdown = blockquote_markdown(content)
+            if markdown:
+                self.ensure_block()
+                self.append(markdown)
+                self.ensure_block()
+            self.remove_from_stack(tag)
+            return
+        if tag in ("title", "p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "li"):
             self.ensure_block()
+            if tag == "li" and self.ordered_stack:
+                self.last_block_kind = "ordered"
         elif tag in ("strong", "b"):
             self.append("**")
         elif tag in ("em", "i"):
@@ -1094,8 +1613,7 @@ class FeishuHtmlMarkdownParser(HTMLParser):
             self.ensure_block()
             self.append(f"<!-- feishu-grid:{payload} -->")
             self.ensure_block()
-        if tag in self.stack:
-            self.stack.remove(tag)
+        self.remove_from_stack(tag)
 
     def handle_data(self, data: str) -> None:
         if not data:
@@ -1768,7 +2286,15 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if self.path == "/api/health":
-            self.send_json(200, {"ok": True, "larkCli": lark_cli_health(), "feishuOpenApi": feishu_openapi_health()})
+            self.send_json(
+                200,
+                {
+                    "ok": True,
+                    "larkCli": lark_cli_health(),
+                    "feishuOpenApi": feishu_openapi_health(),
+                    "r2": r2_health(),
+                },
+            )
             return
 
         if self.path == "/api/settings":

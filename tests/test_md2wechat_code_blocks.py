@@ -52,3 +52,55 @@ def test_feishu_image_grid_renders_two_columns_without_touching_paragraphs():
     assert html.count('display: table-cell') == 2
     assert 'border-radius: 10px' in html
     assert 'box-shadow: rgba(20, 28, 38, 0.14) 0 6px 18px' in html
+
+
+def test_feishu_grid_renders_video_placeholder():
+    md2wechat = load_md2wechat_module()
+    theme = md2wechat.ACCOUNT_THEMES[md2wechat.DEFAULT_ACCOUNT]
+    html = md2wechat.md_to_html_body(
+        '<!-- feishu-grid:[{"width":"0.5","images":[{"src":"https://example.com/demo.mp4","alt":"演示视频","type":"video"}]},{"width":"0.5","images":[{"src":"right.jpg","alt":"right"}]}] -->',
+        theme,
+    )
+
+    assert 'display: table; width: 100%' in html
+    assert html.count('display: table-cell') == 2
+    assert '视频占位：演示视频' in html
+    assert 'https://example.com/demo.mp4' not in html
+    assert 'right.jpg' in html
+
+
+def test_feishu_stream_image_markdown_renders_as_video_placeholder():
+    md2wechat = load_md2wechat_module()
+    theme = md2wechat.ACCOUNT_THEMES[md2wechat.DEFAULT_ACCOUNT]
+    src = 'https://internal-api-drive-stream.feishu.cn/space/api/box/stream/download/authcode/?code=abc'
+    html = md2wechat.md_to_html_body(f'![飞书视频]({src})', theme)
+
+    assert '视频占位：飞书视频' in html
+    assert src not in html
+    assert '<img' not in html
+
+
+def test_feishu_stream_image_with_image_alt_stays_image():
+    md2wechat = load_md2wechat_module()
+    theme = md2wechat.ACCOUNT_THEMES[md2wechat.DEFAULT_ACCOUNT]
+    src = 'https://internal-api-drive-stream.feishu.cn/space/api/box/stream/download/authcode/?code=abc'
+    html = md2wechat.md_to_html_body(f'![test.jpg]({src})', theme)
+
+    assert '视频占位' not in html
+    assert '<img' in html
+    assert src in html
+
+
+def test_ordered_list_uses_wechat_stable_inline_markers():
+    md2wechat = load_md2wechat_module()
+    theme = md2wechat.ACCOUNT_THEMES[md2wechat.DEFAULT_ACCOUNT]
+    html = md2wechat.md_to_html_body(
+        "1. 第一项\n2. 第二项",
+        theme,
+    )
+
+    assert "display: table-cell" not in html
+    assert "1.</span>" in html
+    assert "2.</span>" in html
+    assert "text-align-last: left" in html
+    assert "letter-spacing: 0" in html

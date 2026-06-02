@@ -439,14 +439,15 @@ def md_to_html_body(md_body: str, theme: dict, preserve_paragraphs: bool = False
             for marker, item in items:
                 marker_text = f'{marker}.' if is_ordered else marker
                 item_html.append(
-                    f'<section style="display: table; width: 100%; margin: 0 0 10px 0; '
+                    f'<p style="margin: 0 0 10px 0; padding: 0; '
                     f'font-size: {item_font_size}; line-height: 2em; color: rgb(31, 35, 41); '
                     f'font-family: PingFang SC, system-ui, -apple-system, BlinkMacSystemFont, '
-                    f'Helvetica Neue, Arial, sans-serif;">'
-                    f'<span style="display: table-cell; width: 30px; padding-right: 6px; '
-                    f'font-weight: bold; color: {primary}; vertical-align: top;">{marker_text}</span>'
-                    f'<span style="display: table-cell; vertical-align: top;">{format_inline(item, theme)}</span>'
-                    f'</section>'
+                    f'Helvetica Neue, Arial, sans-serif; text-align: left; text-align-last: left; '
+                    f'letter-spacing: 0; word-break: normal; overflow-wrap: break-word;">'
+                    f'<span style="display: inline-block; width: 28px; font-weight: bold; '
+                    f'color: {primary}; vertical-align: top; letter-spacing: 0;">{marker_text}</span>'
+                    f'<span style="letter-spacing: 0;">{format_inline(item, theme)}</span>'
+                    f'</p>'
                 )
             html_parts.append(
                 f'<section style="margin: 12px 0 16px 0; padding: 0;">'
@@ -458,9 +459,10 @@ def md_to_html_body(md_body: str, theme: dict, preserve_paragraphs: bool = False
         # ── Markdown 图片 ![alt](path) ────────
         image_match = re.match(r'!\[(.*?)\]\((.+?)\)$', stripped)
         if image_match:
-            alt_text = escape_html(image_match.group(1).strip() or 'image')
+            raw_alt_text = image_match.group(1).strip() or 'image'
+            alt_text = escape_html(raw_alt_text)
             image_src = image_match.group(2).strip()
-            if is_video_src(image_src):
+            if is_video_src(image_src, raw_alt_text):
                 html_parts.append(make_video_placeholder(alt_text, image_src, theme))
                 i += 1
                 continue
@@ -533,7 +535,7 @@ def make_feishu_image_grid(payload: str, theme: dict) -> str:
         return ""
     if not isinstance(columns, list):
         return ""
-    image_columns = []
+    media_columns = []
     for column in columns:
         if not isinstance(column, dict):
             continue
@@ -548,30 +550,37 @@ def make_feishu_image_grid(payload: str, theme: dict) -> str:
             width = max(0.15, min(float(column.get("width") or 0.5), 1.0)) * 100
         except (TypeError, ValueError):
             width = 50
-        image_columns.append({
+        media_columns.append({
             "width": width,
             "src": src,
             "alt": str(image.get("alt") or "飞书图片").strip() or "飞书图片",
+            "type": str(image.get("type") or "").strip(),
         })
-    if not image_columns:
+    if not media_columns:
         return ""
 
     cells = []
-    for column in image_columns:
+    for column in media_columns:
         src = escape_attr(column["src"])
         alt = escape_attr(column["alt"])
-        image_attrs = (
-            f'data-local-src="{src}" src=""'
-            if not re.match(r'^(https?://|data:image/)', column["src"])
-            else f'src="{src}"'
-        )
+        if column["type"] == "video" or is_video_src(column["src"]):
+            body = make_video_placeholder(column["alt"], column["src"], theme)
+        else:
+            image_attrs = (
+                f'data-local-src="{src}" src=""'
+                if not re.match(r'^(https?://|data:image/)', column["src"])
+                else f'src="{src}"'
+            )
+            body = (
+                f'<img {image_attrs} alt="{alt}" style="display: inline-block; width: 100%; '
+                f'max-width: 100%; height: auto; border-radius: 10px; '
+                f'box-shadow: rgba(20, 28, 38, 0.14) 0 6px 18px; '
+                f'background-color: transparent;"/>'
+            )
         cells.append(
             f'<section style="display: table-cell; width: {column["width"]:.3f}%; '
             f'vertical-align: top; padding: 0 4px; box-sizing: border-box;">'
-            f'<img {image_attrs} alt="{alt}" style="display: inline-block; width: 100%; '
-            f'max-width: 100%; height: auto; border-radius: 10px; '
-            f'box-shadow: rgba(20, 28, 38, 0.14) 0 6px 18px; '
-            f'background-color: transparent;"/>'
+            f'{body}'
             f'</section>'
         )
 
@@ -597,22 +606,27 @@ def is_image_caption(text: str) -> bool:
     return True
 
 
-def is_video_src(src: str) -> bool:
-    return bool(re.search(r'\.(mp4|mov|m4v|webm)(\?.*)?$', src.strip(), re.I))
+def is_video_src(src: str, label: str = "") -> bool:
+    value = src.strip()
+    if "视频" in (label or ""):
+        return True
+    if re.search(r'\.(mp4|mov|m4v|webm)(\?.*)?$', value, re.I):
+        return True
+    return False
 
 
 def make_video_placeholder(label: str, src: str, theme: dict) -> str:
     primary = theme["primary"] if theme else "rgb(113, 18, 151)"
-    src_html = escape_html(src)
     label_html = escape_html(label or "视频")
     return (
         f'<section style="margin: 18px 0; padding: 18px 16px; '
         f'border: 1px dashed {primary}; border-radius: 8px; '
-        f'background-color: rgb(250, 248, 252); text-align: center;">'
+        f'background-color: rgb(250, 248, 252); text-align: center; text-align-last: center; '
+        f'letter-spacing: 0;">'
         f'<p style="margin: 0 0 6px 0; font-size: 15px; font-weight: bold; '
-        f'line-height: 1.7; color: {primary};">视频占位：{label_html}</p>'
-        f'<p style="margin: 0; font-size: 12px; line-height: 1.6; color: rgb(115, 119, 125);">'
-        f'粘贴到公众号后台后，请在这里插入/上传对应视频。<br/>来源：{src_html}</p>'
+        f'line-height: 1.7; color: {primary}; letter-spacing: 0;">视频占位：{label_html}</p>'
+        f'<p style="margin: 0; font-size: 12px; line-height: 1.6; color: rgb(115, 119, 125); '
+        f'letter-spacing: 0;">粘贴到公众号后台后，请在这里插入/上传对应视频。</p>'
         f'</section>'
     )
 
@@ -631,7 +645,8 @@ def make_paragraph(content: str, indent: bool = False, theme: dict = None, prese
         f'font-family: PingFang SC, system-ui, -apple-system, BlinkMacSystemFont, '
         f'Helvetica Neue, Hiragino Sans GB, Microsoft YaHei UI, Microsoft YaHei, '
         f'Arial, sans-serif; color: rgb(31, 35, 41); '
-        f'margin: {paragraph_margin}; word-break: break-all; {padding}'
+        f'margin: {paragraph_margin}; text-align: left; text-align-last: left; '
+        f'letter-spacing: 0; word-break: normal; overflow-wrap: break-word; {padding}'
         f'min-height: 20px;'
     )
 

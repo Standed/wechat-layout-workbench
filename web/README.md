@@ -68,6 +68,22 @@ docker compose -f web/docker-compose.yml up --build
 OPENAI_API_KEY=你的 key
 ```
 
+如果要让「复制到公众号」对飞书图片使用 Cloudflare R2 公网图源，需要提供：
+
+```bash
+R2_BUCKET_NAME=你的 R2 bucket
+R2_ACCESS_KEY_ID=你的 R2 access key
+R2_SECRET_ACCESS_KEY=你的 R2 secret key
+R2_ENDPOINT=https://<account_id>.r2.cloudflarestorage.com
+NEXT_PUBLIC_R2_PUBLIC_URL=https://你的公开访问域名
+```
+
+本机直接运行时，服务会优先使用当前环境变量；如果未配置，会尝试复用本机 video-agent-pro 的 R2 配置：
+
+```text
+/Users/shitengda/Downloads/docker/n8n/vibeAgent/finalAgent/video-agent-pro/.env.local
+```
+
 ## 飞书导入依赖
 
 飞书链接导入不是浏览器直接抓网页，而是本地 Python 服务调用 `lark-cli`：
@@ -104,3 +120,5 @@ lark-cli update
 ```
 
 线上网站如果要像 `xysaiai.cn/admin/imports/feishu` 那样导入，应改成服务端飞书 OpenAPI 模式：服务端保存飞书应用凭证，下载文档内容和图片，再把图片保存到本站存储。这样访问者不需要本机安装 `lark-cli`。
+
+图片较多的公众号文章不要依赖 Feishu 内部图片 URL 或整篇 base64 剪贴板。当前工作台会把 `output/_feishu_media/` 下的飞书图片上传到 R2，并在复制公众号富文本时优先使用 `data-r2-src`。

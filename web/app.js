@@ -601,6 +601,10 @@ function absoluteUrl(src) {
 }
 
 function platformImageSrc(image) {
+  const r2Src = image.getAttribute("data-r2-src") || "";
+  if (r2Src) {
+    return r2Src;
+  }
   const src = image.getAttribute("src") || "";
   if (!src || src.startsWith("data:image/")) {
     return src;
@@ -646,7 +650,12 @@ async function buildClipboardHtml({ imageMode = "data-url" } = {}) {
       }
       continue;
     }
-    const imageSrc = imageMode === "platform-url" ? platformImageSrc(sourceImages[i]) : await imageToDataUrl(sourceImages[i]);
+    const publicSrc = platformImageSrc(sourceImages[i]);
+    const imageSrc = isPublicImageSrc(publicSrc)
+      ? publicSrc
+      : imageMode === "platform-url"
+        ? publicSrc
+        : await imageToDataUrl(sourceImages[i]);
     if (imageSrc) {
       cloneImages[i].setAttribute("src", imageSrc);
     }
