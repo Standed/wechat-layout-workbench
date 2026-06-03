@@ -240,11 +240,10 @@ def md_to_html_body(md_body: str, theme: dict, preserve_paragraphs: bool = False
         if stripped.startswith('# '):
             heading_text = format_inline(stripped[2:].strip(), theme)
             primary_bg = theme.get('primary_bg', 'rgb(243, 240, 250)')
-            accent = theme.get('accent', 'rgb(214, 168, 65)')
             html_parts.append(
                 f'<section style="margin: 38px 0 20px 0; text-align: center;">'
                 f'<section style="display: inline-block; padding: 4px 0 7px 0; '
-                f'border-bottom: 3px solid {accent};">'
+                f'border-bottom: 3px solid {primary};">'
                 f'<section style="display: inline-block; padding: 7px 16px; '
                 f'background-color: {primary_bg}; border-radius: 4px; '
                 f'font-weight: bold; font-size: 18px; color: rgb(31, 35, 41); '

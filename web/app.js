@@ -663,6 +663,23 @@ async function buildClipboardHtml({ imageMode = "data-url" } = {}) {
   return clone.innerHTML.trim();
 }
 
+async function prepareHtmlForWechatCopy(html) {
+  try {
+    const response = await fetch("/api/prepare-copy", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ html }),
+    });
+    if (!response.ok) {
+      return html;
+    }
+    const data = await response.json();
+    return data.html || html;
+  } catch (error) {
+    return html;
+  }
+}
+
 async function writeHtmlToClipboard(html) {
   const copySource = document.createElement("div");
   copySource.style.position = "fixed";
@@ -704,7 +721,16 @@ async function copyRichText() {
   }
 
   try {
-    const html = await buildClipboardHtml({ imageMode: "data-url" });
+    setStatus("正在准备公众号图片...");
+    const previewHtml = await prepareHtmlForWechatCopy(el.preview.innerHTML.trim());
+    const oldPreviewHtml = el.preview.innerHTML;
+    let html = "";
+    try {
+      el.preview.innerHTML = previewHtml;
+      html = await buildClipboardHtml({ imageMode: "data-url" });
+    } finally {
+      el.preview.innerHTML = oldPreviewHtml;
+    }
     await writeHtmlToClipboard(html);
     setStatus("公众号富文本已复制。现在直接粘贴到微信公众号编辑器，不需要再进壹伴转 HTML。");
   } catch (error) {

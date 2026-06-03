@@ -12,10 +12,12 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
 from base64 import b64decode
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from html import unescape
 from html.parser import HTMLParser
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -73,6 +75,7 @@ R2_CACHE_PATH = ROOT / "output" / "_feishu_media" / ".r2-cache.json"
 VIDEO_AGENT_PRO_ENV = ROOT.parent / "vibeAgent" / "finalAgent" / "video-agent-pro" / ".env.local"
 R2_TEMP_IMAGE_TTL_SECONDS = 86400
 R2_SIGNED_URL_REFRESH_MARGIN_SECONDS = 900
+R2_CACHE_LOCK = threading.RLock()
 
 FONT_CANDIDATES = [
     "/System/Library/Fonts/STHeiti Medium.ttc",
@@ -158,6 +161,8 @@ def r2_health() -> dict:
         "ok": config["configured"],
         "configured": config["configured"],
         "publicUrl": config["publicUrl"] if config["publicUrl"] else "",
+        "usePublicUrl": os.environ.get("R2_USE_PUBLIC_URL", "").strip().lower() in ("1", "true", "yes"),
+        "uploadConcurrency": r2_upload_concurrency(),
         "envFallback": str(VIDEO_AGENT_PRO_ENV) if VIDEO_AGENT_PRO_ENV.exists() else "",
         "missing": missing,
         "error": "" if config["configured"] else "未配置 Cloudflare R2，公众号复制会回退为 data URL 图片。",
@@ -165,17 +170,33 @@ def r2_health() -> dict:
 
 
 def r2_cache() -> dict:
-    if not R2_CACHE_PATH.exists():
-        return {}
-    try:
-        return json.loads(R2_CACHE_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    with R2_CACHE_LOCK:
+        if not R2_CACHE_PATH.exists():
+            return {}
+        try:
+            return json.loads(R2_CACHE_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
 
 
 def save_r2_cache(cache: dict) -> None:
-    R2_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    R2_CACHE_PATH.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+    with R2_CACHE_LOCK:
+        R2_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        R2_CACHE_PATH.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def update_r2_cache_entry(rel: str, entry: dict) -> None:
+    with R2_CACHE_LOCK:
+        cache = r2_cache()
+        cache[rel] = entry
+        save_r2_cache(cache)
+
+
+def r2_upload_concurrency() -> int:
+    try:
+        return max(1, min(int(os.environ.get("R2_UPLOAD_CONCURRENCY", "8")), 16))
+    except ValueError:
+        return 8
 
 
 def aws_signing_key(secret: str, date_stamp: str, region: str = "auto", service: str = "s3") -> bytes:
@@ -233,10 +254,19 @@ def r2_url_accessible(url: str) -> bool:
         return False
     try:
         request = urllib.request.Request(url, method="HEAD")
-        with urllib.request.urlopen(request, timeout=20) as response:
+        with r2_urlopen(request, timeout=20) as response:
             return 200 <= response.status < 300
     except Exception:
         return False
+
+
+def r2_urlopen(request: urllib.request.Request, timeout: int = 90):
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    return opener.open(request, timeout=timeout)
+
+
+def should_use_public_r2_url() -> bool:
+    return os.environ.get("R2_USE_PUBLIC_URL", "").strip().lower() in ("1", "true", "yes")
 
 
 def signed_url_uses_current_ttl(url: str) -> bool:
@@ -264,7 +294,7 @@ def cached_r2_url(cache: dict, rel: str, digest: str, config: dict) -> str | Non
             return cached["url"]
     if cached.get("mode") == "public" and cached.get("url"):
         return cached["url"]
-    if cached.get("url") and "X-Amz-Signature=" not in cached["url"] and r2_url_accessible(cached["url"]):
+    if should_use_public_r2_url() and cached.get("url") and "X-Amz-Signature=" not in cached["url"] and r2_url_accessible(cached["url"]):
         cached["mode"] = "public"
         return cached["url"]
     key = cached.get("key")
@@ -347,13 +377,13 @@ def upload_file_to_r2(path: Path) -> str | None:
         method="PUT",
     )
     try:
-        with urllib.request.urlopen(request, timeout=90) as response:
+        with r2_urlopen(request, timeout=90) as response:
             if response.status not in (200, 201):
                 return None
     except Exception:
         return None
     public_url = public_r2_url(config["publicUrl"], key)
-    if r2_url_accessible(public_url):
+    if should_use_public_r2_url() and r2_url_accessible(public_url):
         url = public_url
         mode = "public"
         expires_at = None
@@ -363,7 +393,7 @@ def upload_file_to_r2(path: Path) -> str | None:
         expires_at = time.time() + R2_TEMP_IMAGE_TTL_SECONDS
     if not url:
         return None
-    cache[rel] = {
+    update_r2_cache_entry(rel, {
         "sha256": digest,
         "key": key,
         "url": url,
@@ -371,8 +401,7 @@ def upload_file_to_r2(path: Path) -> str | None:
         "mode": mode,
         "expiresAtEpoch": expires_at,
         "uploadedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    }
-    save_r2_cache(cache)
+    })
     return url
 
 
@@ -382,18 +411,40 @@ def attach_r2_image_sources(html: str) -> str:
     if not r2_config()["configured"]:
         return html
 
+    uploads: dict[str, Path] = {}
+    for match in re.finditer(r"<img\b[^>]*>", html or "", flags=re.I):
+        tag = match.group(0)
+        local_match = re.search(r'\bdata-local-src="([^"]+)"', tag)
+        if not local_match or 'data-r2-src="' in tag:
+            continue
+        rel = unescape(local_match.group(1))
+        if not rel.startswith("output/_feishu_media/"):
+            continue
+        path = (ROOT / rel).resolve()
+        if ROOT in path.parents and path.is_file():
+            uploads.setdefault(rel, path)
+
+    uploaded_urls: dict[str, str] = {}
+    if uploads:
+        max_workers = min(r2_upload_concurrency(), len(uploads))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_rel = {executor.submit(upload_file_to_r2, path): rel for rel, path in uploads.items()}
+            for future in as_completed(future_to_rel):
+                rel = future_to_rel[future]
+                try:
+                    url = future.result()
+                except Exception:
+                    url = None
+                if url:
+                    uploaded_urls[rel] = url
+
     def repl(match: re.Match) -> str:
         tag = match.group(0)
         local_match = re.search(r'\bdata-local-src="([^"]+)"', tag)
         if not local_match or 'data-r2-src="' in tag:
             return tag
         rel = unescape(local_match.group(1))
-        if not rel.startswith("output/_feishu_media/"):
-            return tag
-        path = (ROOT / rel).resolve()
-        if ROOT not in path.parents or not path.is_file():
-            return tag
-        url = upload_file_to_r2(path)
+        url = uploaded_urls.get(rel)
         if not url:
             return tag
         suffix = "/>" if tag.endswith("/>") else ">"
@@ -432,8 +483,7 @@ def convert_markdown(markdown: str, account: str, preserve_paragraphs: bool = Fa
         parsed["title"] = "未命名文章"
     theme = theme_for_account(account)
     full_html = md2wechat.build_full_html(parsed, theme)
-    content_html = attach_r2_image_sources(content_from_full_html(full_html))
-    full_html = attach_r2_image_sources(full_html)
+    content_html = content_from_full_html(full_html)
     return {
         "title": parsed["title"],
         "account": account,
@@ -664,7 +714,6 @@ def rich_content_html(raw_html: str, account: str) -> dict:
         'word-break: break-word; margin-bottom: 16px;">'
         f"{header}{clean_html}{footer}</section>"
     )
-    content_html = attach_r2_image_sources(content_html)
     return {
         "title": title_from_rich_html(raw_html),
         "account": account,
@@ -2438,7 +2487,15 @@ class Handler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self) -> None:
-        if self.path not in ("/api/convert", "/api/cover-prompt", "/api/generate-cover", "/api/import-feishu", "/api/export-card", "/api/settings"):
+        if self.path not in (
+            "/api/convert",
+            "/api/cover-prompt",
+            "/api/generate-cover",
+            "/api/import-feishu",
+            "/api/export-card",
+            "/api/settings",
+            "/api/prepare-copy",
+        ):
             self.send_json(404, {"error": "Not found"})
             return
 
@@ -2457,6 +2514,22 @@ class Handler(SimpleHTTPRequestHandler):
                 }
                 save_settings(settings)
                 self.send_json(200, settings)
+                return
+
+            if self.path == "/api/prepare-copy":
+                html = payload.get("html", "")
+                if not str(html).strip():
+                    self.send_json(400, {"error": "还没有可复制的排版内容"})
+                    return
+                prepared = attach_r2_image_sources(str(html))
+                self.send_json(
+                    200,
+                    {
+                        "html": prepared,
+                        "localImageCount": str(html).count('data-local-src="'),
+                        "r2ImageCount": prepared.count('data-r2-src="'),
+                    },
+                )
                 return
 
             if self.path == "/api/import-feishu":

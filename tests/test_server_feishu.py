@@ -280,6 +280,35 @@ def test_attach_r2_image_sources_adds_public_url_for_feishu_media(monkeypatch, t
     assert 'data-r2-src="https://assets.example.com/temp/image-token.png"' in result
 
 
+def test_attach_r2_image_sources_uploads_multiple_feishu_images(monkeypatch, tmp_path):
+    server = load_server_module()
+    monkeypatch.setattr(server, "ROOT", tmp_path)
+    media_dir = server.ROOT / "output" / "_feishu_media" / "Doc123"
+    media_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("a.png", "b.png"):
+        (media_dir / name).write_bytes(b"\x89PNG\r\n\x1a\nfake")
+
+    uploaded = []
+
+    def fake_upload(path):
+        uploaded.append(path.name)
+        return f"https://assets.example.com/{path.name}"
+
+    monkeypatch.setattr(server, "r2_config", lambda: {"configured": True})
+    monkeypatch.setattr(server, "r2_upload_concurrency", lambda: 2)
+    monkeypatch.setattr(server, "upload_file_to_r2", fake_upload)
+
+    html = (
+        '<img data-local-src="output/_feishu_media/Doc123/a.png" src="" alt="a"/>'
+        '<img data-local-src="output/_feishu_media/Doc123/b.png" src="" alt="b"/>'
+    )
+    result = server.attach_r2_image_sources(html)
+
+    assert sorted(uploaded) == ["a.png", "b.png"]
+    assert 'data-r2-src="https://assets.example.com/a.png"' in result
+    assert 'data-r2-src="https://assets.example.com/b.png"' in result
+
+
 def test_attach_r2_image_sources_ignores_non_feishu_local_images(monkeypatch):
     server = load_server_module()
 
@@ -289,6 +318,28 @@ def test_attach_r2_image_sources_ignores_non_feishu_local_images(monkeypatch):
     html = '<img data-local-src="output/main/images/example.png" src="" alt="本地图"/>'
 
     assert server.attach_r2_image_sources(html) == html
+
+
+def test_convert_markdown_does_not_upload_r2_for_preview(monkeypatch):
+    server = load_server_module()
+    monkeypatch.setattr(server, "upload_file_to_r2", lambda path: (_ for _ in ()).throw(AssertionError("preview should not upload")))
+
+    result = server.convert_markdown(
+        "# 标题\n\n![图](output/_feishu_media/Doc123/image.png)",
+        "西羊石AI视频",
+        preserve_paragraphs=True,
+    )
+
+    assert 'data-local-src="output/_feishu_media/Doc123/image.png"' in result["contentHtml"]
+    assert "data-r2-src" not in result["contentHtml"]
+
+
+def test_account_heading_uses_primary_color_not_gold():
+    server = load_server_module()
+    html = server.convert_markdown("# 文章标题\n\n# 工具准备", "西羊石AI视频")["contentHtml"]
+
+    assert "border-bottom: 3px solid rgb(113, 18, 151)" in html
+    assert "border-bottom: 3px solid rgb(214, 168, 65)" not in html
 
 
 def test_fetch_feishu_document_openapi_converts_blocks_and_grid(monkeypatch):
