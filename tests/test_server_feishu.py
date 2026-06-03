@@ -187,6 +187,60 @@ def test_image_extension_keeps_gif_by_content_type_and_file_header():
     assert server.image_extension("application/octet-stream", b"RIFFxxxxWEBP...") == ".webp"
 
 
+def test_presigned_r2_get_url_defaults_to_one_day():
+    from urllib.parse import parse_qs, urlparse
+
+    server = load_server_module()
+    url = server.presigned_r2_get_url(
+        {
+            "bucket": "bucket",
+            "accessKeyId": "access",
+            "secretAccessKey": "secret",
+            "endpoint": "https://example.r2.cloudflarestorage.com",
+        },
+        "temp/wechat-layout/Doc123/image.png",
+    )
+
+    assert url is not None
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query)
+    assert parsed.path == "/bucket/temp/wechat-layout/Doc123/image.png"
+    assert params["X-Amz-Expires"] == ["86400"]
+    assert params["X-Amz-Signature"][0]
+
+
+def test_cached_r2_url_refreshes_old_signed_ttl(monkeypatch):
+    from urllib.parse import parse_qs, urlparse
+
+    server = load_server_module()
+    monkeypatch.setattr(server, "save_r2_cache", lambda cache: None)
+    config = {
+        "bucket": "bucket",
+        "accessKeyId": "access",
+        "secretAccessKey": "secret",
+        "endpoint": "https://example.r2.cloudflarestorage.com",
+    }
+    cache = {
+        "output/_feishu_media/Doc123/image.png": {
+            "sha256": "digest",
+            "key": "temp/wechat-layout/Doc123/image.png",
+            "mode": "signed",
+            "expiresAtEpoch": 9999999999,
+            "url": (
+                "https://example.r2.cloudflarestorage.com/bucket/temp/wechat-layout/Doc123/image.png"
+                "?X-Amz-Expires=604800&X-Amz-Signature=old"
+            ),
+        }
+    }
+
+    url = server.cached_r2_url(cache, "output/_feishu_media/Doc123/image.png", "digest", config)
+
+    assert url is not None
+    params = parse_qs(urlparse(url).query)
+    assert params["X-Amz-Expires"] == ["86400"]
+    assert params["X-Amz-Signature"][0] != "old"
+
+
 def test_attach_r2_image_sources_adds_public_url_for_feishu_media(monkeypatch, tmp_path):
     server = load_server_module()
     monkeypatch.setattr(server, "ROOT", tmp_path)

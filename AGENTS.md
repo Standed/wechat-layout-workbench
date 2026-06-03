@@ -19,6 +19,7 @@
 - Imported Feishu images stay local for preview via `data-local-src`.
 - During conversion, Feishu local images under `output/_feishu_media/` are uploaded to R2 and annotated with `data-r2-src`.
 - The front-end copy path should prefer `data-r2-src`; if unavailable, it may fall back to the old data URL copy path.
+- Temporary R2 image access should last 24 hours. Configure an R2 lifecycle rule to delete the `temp/wechat-layout/` prefix after 1 day.
 
 ## Verification
 

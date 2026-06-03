@@ -71,6 +71,8 @@ COVER_STYLES = {
 SETTINGS_PATH = ROOT / "config" / "workbench-settings.json"
 R2_CACHE_PATH = ROOT / "output" / "_feishu_media" / ".r2-cache.json"
 VIDEO_AGENT_PRO_ENV = ROOT.parent / "vibeAgent" / "finalAgent" / "video-agent-pro" / ".env.local"
+R2_TEMP_IMAGE_TTL_SECONDS = 86400
+R2_SIGNED_URL_REFRESH_MARGIN_SECONDS = 900
 
 FONT_CANDIDATES = [
     "/System/Library/Fonts/STHeiti Medium.ttc",
@@ -194,11 +196,11 @@ def canonical_query(params: dict[str, str]) -> str:
     )
 
 
-def presigned_r2_get_url(config: dict, key: str, expires: int = 604800) -> str | None:
+def presigned_r2_get_url(config: dict, key: str, expires: int = R2_TEMP_IMAGE_TTL_SECONDS) -> str | None:
     parsed = urlparse(config["endpoint"])
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         return None
-    expires = max(60, min(int(expires), 604800))
+    expires = max(60, min(int(expires), R2_TEMP_IMAGE_TTL_SECONDS))
     date_stamp = time.strftime("%Y%m%d", time.gmtime())
     amz_date = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     credential_scope = f"{date_stamp}/auto/s3/aws4_request"
@@ -237,6 +239,14 @@ def r2_url_accessible(url: str) -> bool:
         return False
 
 
+def signed_url_uses_current_ttl(url: str) -> bool:
+    try:
+        params = parse_qs(urlparse(url).query)
+    except Exception:
+        return False
+    return (params.get("X-Amz-Expires") or [""])[0] == str(R2_TEMP_IMAGE_TTL_SECONDS)
+
+
 def cached_r2_url(cache: dict, rel: str, digest: str, config: dict) -> str | None:
     cached = cache.get(rel)
     if not cached or cached.get("sha256") != digest:
@@ -246,7 +256,11 @@ def cached_r2_url(cache: dict, rel: str, digest: str, config: dict) -> str | Non
             expires_at = float(cached.get("expiresAtEpoch") or 0)
         except (TypeError, ValueError):
             expires_at = 0
-        if cached.get("url") and expires_at > time.time() + 3600:
+        if (
+            cached.get("url")
+            and expires_at > time.time() + R2_SIGNED_URL_REFRESH_MARGIN_SECONDS
+            and signed_url_uses_current_ttl(cached["url"])
+        ):
             return cached["url"]
     if cached.get("mode") == "public" and cached.get("url"):
         return cached["url"]
@@ -260,7 +274,7 @@ def cached_r2_url(cache: dict, rel: str, digest: str, config: dict) -> str | Non
             cached.update({
                 "url": signed_url,
                 "mode": "signed",
-                "expiresAtEpoch": time.time() + 604800,
+                "expiresAtEpoch": time.time() + R2_TEMP_IMAGE_TTL_SECONDS,
                 "signedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             })
             save_r2_cache(cache)
@@ -300,7 +314,7 @@ def upload_file_to_r2(path: Path) -> str | None:
     amz_date = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     canonical_uri = f"/{quote(config['bucket'], safe='')}/{quote(key, safe='/~')}"
     headers = {
-        "cache-control": "public, max-age=604800",
+        "cache-control": f"public, max-age={R2_TEMP_IMAGE_TTL_SECONDS}",
         "content-type": content_type,
         "host": parsed.netloc,
         "x-amz-content-sha256": payload_hash,
@@ -346,7 +360,7 @@ def upload_file_to_r2(path: Path) -> str | None:
     else:
         url = presigned_r2_get_url(config, key)
         mode = "signed"
-        expires_at = time.time() + 604800
+        expires_at = time.time() + R2_TEMP_IMAGE_TTL_SECONDS
     if not url:
         return None
     cache[rel] = {

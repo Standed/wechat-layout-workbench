@@ -109,7 +109,9 @@ OpenAPI 模式原理：
 2. 服务端用 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 获取 `tenant_access_token`。
 3. 服务端读取 `/docx/v1/documents/{document_id}` 和 `/docx/v1/documents/{document_id}/blocks`。
 4. 服务端把 block 树转成 Markdown，并通过 `/drive/v1/medias/{token}/download` 下载图片到 `output/_feishu_media/`。
-5. 页面把 Markdown 转成公众号可复制富文本；如果 R2 已配置，飞书本地图片会补上 `data-r2-src`，复制到公众号时使用 R2 公网图源，避免大图文章塞进超大的 base64 剪贴板。
+5. 页面把 Markdown 转成公众号可复制富文本；如果 R2 已配置，飞书本地图片会补上 `data-r2-src`，复制到公众号时使用 R2 图源，避免大图文章塞进超大的 base64 剪贴板。
+
+R2 图片按临时素材处理：签名访问链接有效期为 24 小时。建议在 Cloudflare R2 后台给 `temp/wechat-layout/` 前缀配置 1 天生命周期删除规则，避免临时图片长期占用存储。
 
 飞书开放平台应用至少需要开通并发布：
 

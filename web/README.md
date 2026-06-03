@@ -122,3 +122,5 @@ lark-cli update
 线上网站如果要像 `xysaiai.cn/admin/imports/feishu` 那样导入，应改成服务端飞书 OpenAPI 模式：服务端保存飞书应用凭证，下载文档内容和图片，再把图片保存到本站存储。这样访问者不需要本机安装 `lark-cli`。
 
 图片较多的公众号文章不要依赖 Feishu 内部图片 URL 或整篇 base64 剪贴板。当前工作台会把 `output/_feishu_media/` 下的飞书图片上传到 R2，并在复制公众号富文本时优先使用 `data-r2-src`。
+
+R2 图片按临时素材处理：签名访问链接有效期为 24 小时。建议在 Cloudflare R2 后台给 `temp/wechat-layout/` 前缀配置 1 天生命周期删除规则，避免临时图片长期占用存储。
