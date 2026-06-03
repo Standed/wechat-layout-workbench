@@ -105,6 +105,27 @@ def test_extract_feishu_document_preserves_image_grid_in_markdown():
     assert "right.jpg" in markdown
 
 
+def test_extract_feishu_document_preserves_grid_image_captions():
+    server = load_server_module()
+    payload = {
+        "document": {
+            "title": "飞书标题",
+            "content": (
+                '<grid><column width-ratio="0.5"><img src="left.jpg" name="test.jpg"/>侯府正院-正厅中轴视角</column>'
+                '<column width-ratio="0.5"><img src="right.jpg" name="test.jpg"/><figcaption>侯府正院-正门望院视角</figcaption></column></grid>'
+            ),
+        }
+    }
+
+    markdown = server.extract_feishu_document(payload, "https://example.feishu.cn/docx/AbCd")["markdown"]
+    converted = server.convert_markdown(markdown, "西羊石AI视频", preserve_paragraphs=True)["contentHtml"]
+
+    assert "侯府正院-正厅中轴视角" in markdown
+    assert "侯府正院-正门望院视角" in markdown
+    assert "侯府正院-正厅中轴视角" in converted
+    assert "侯府正院-正门望院视角" in converted
+
+
 def test_extract_feishu_document_preserves_complex_html_blocks():
     server = load_server_module()
     payload = {
@@ -299,8 +320,8 @@ def test_fetch_feishu_document_openapi_converts_blocks_and_grid(monkeypatch):
                         {"block_id": "grid", "block_type": 24, "children": ["c1", "c2"]},
                         {"block_id": "c1", "block_type": 25, "grid_column": {"width_ratio": "0.5"}, "children": ["img1"]},
                         {"block_id": "c2", "block_type": 25, "grid_column": {"width_ratio": "0.5"}, "children": ["img2"]},
-                        {"block_id": "img1", "block_type": 27, "image": {"token": "left-token"}},
-                        {"block_id": "img2", "block_type": 27, "image": {"token": "right-token"}},
+                        {"block_id": "img1", "block_type": 27, "image": {"token": "left-token", "caption": "左图说明"}},
+                        {"block_id": "img2", "block_type": 27, "image": {"token": "right-token", "caption": {"elements": [{"text_run": {"content": "右图说明"}}]}}},
                     ],
                     "has_more": False,
                 }
@@ -326,6 +347,8 @@ def test_fetch_feishu_document_openapi_converts_blocks_and_grid(monkeypatch):
     assert "<!-- feishu-grid:" in result["markdown"]
     assert "left-token.jpg" in result["markdown"]
     assert "right-token.jpg" in result["markdown"]
+    assert "左图说明" in result["markdown"]
+    assert "右图说明" in result["markdown"]
     assert any("/blocks?" in call for call in calls)
 
 

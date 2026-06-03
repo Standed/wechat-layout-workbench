@@ -563,6 +563,7 @@ def make_feishu_image_grid(payload: str, theme: dict) -> str:
     for column in media_columns:
         src = escape_attr(column["src"])
         alt = escape_attr(column["alt"])
+        caption = "" if is_generic_image_label(column["alt"]) else column["alt"]
         if column["type"] == "video" or is_video_src(column["src"]):
             body = make_video_placeholder(column["alt"], column["src"], theme)
         else:
@@ -577,6 +578,13 @@ def make_feishu_image_grid(payload: str, theme: dict) -> str:
                 f'box-shadow: rgba(20, 28, 38, 0.14) 0 6px 18px; '
                 f'background-color: transparent;"/>'
             )
+            if caption:
+                body += (
+                    f'<p style="margin: 6px 0 0 0; text-align: center; '
+                    f'font-size: 13px; line-height: 1.55; color: rgb(115, 119, 125); '
+                    f'font-family: PingFang SC, system-ui, -apple-system, sans-serif;">'
+                    f'{format_inline(caption, theme)}</p>'
+                )
         cells.append(
             f'<section style="display: table-cell; width: {column["width"]:.3f}%; '
             f'vertical-align: top; padding: 0 4px; box-sizing: border-box;">'
@@ -604,6 +612,15 @@ def is_image_caption(text: str) -> bool:
     if any(mark in text for mark in ['。', '！', '？', '；', ';']):
         return False
     return True
+
+
+def is_generic_image_label(text: str) -> bool:
+    value = re.sub(r"\s+", " ", str(text or "")).strip().lower()
+    return (
+        not value
+        or value in {"飞书图片", "图片", "image"}
+        or bool(re.search(r"\.(png|jpe?g|webp|gif|bmp|svg)$", value, flags=re.I))
+    )
 
 
 def is_video_src(src: str, label: str = "") -> bool:

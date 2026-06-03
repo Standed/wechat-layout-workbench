@@ -995,6 +995,15 @@ def clean_inline_text(text: str) -> str:
     return text.replace("[", "\\[").replace("]", "\\]") or "飞书图片"
 
 
+def is_generic_image_label(text: str) -> bool:
+    value = re.sub(r"\s+", " ", str(text or "")).strip().lower()
+    return (
+        not value
+        or value in {"飞书图片", "图片", "image"}
+        or bool(re.search(r"\.(png|jpe?g|webp|gif|bmp|svg)$", value, flags=re.I))
+    )
+
+
 def block_id(block: dict) -> str:
     return str(block.get("block_id") or block.get("blockId") or block.get("id") or "")
 
@@ -1109,6 +1118,21 @@ def rich_text_from_block(block: dict) -> str:
     return ""
 
 
+def rich_text_from_value(value) -> str:
+    if isinstance(value, str):
+        return markdown_text(value).strip()
+    if isinstance(value, list):
+        return "".join(element_to_markdown(element) for element in value if isinstance(element, dict)).strip()
+    if isinstance(value, dict):
+        elements = value.get("elements") or value.get("text_elements") or value.get("textElements") or []
+        if elements:
+            return "".join(element_to_markdown(element) for element in elements).strip()
+        for key in ("content", "text", "title", "name"):
+            if isinstance(value.get(key), str):
+                return markdown_text(value.get(key)).strip()
+    return ""
+
+
 def plain_text_from_block(block: dict) -> str:
     return re.sub(r"[*_`~]+", "", rich_text_from_block(block)).strip()
 
@@ -1123,6 +1147,27 @@ def image_token_from_block(block: dict) -> str:
         or image.get("mediaToken")
         or ""
     )
+
+
+def image_caption_from_block(block: dict) -> str:
+    image = block.get("image") if isinstance(block.get("image"), dict) else block
+    for key in ("caption", "description", "alt", "title"):
+        text = rich_text_from_value(image.get(key))
+        if text:
+            return text
+    text = rich_text_from_block(block)
+    return text if text and not re.search(r"\.(png|jpe?g|webp|gif|bmp|svg)$", text, flags=re.I) else ""
+
+
+def image_markdown(alt: str, src: str | None) -> str:
+    caption = "" if is_generic_image_label(alt) else clean_inline_text(alt or "").strip()
+    label = caption or "飞书图片"
+    if not src:
+        return "> 飞书图片暂时无法下载"
+    parts = [f"![{label}]({src})"]
+    if caption:
+        parts.append(caption)
+    return join_markdown_parts(*parts)
 
 
 def build_block_tree(blocks: list[dict]) -> dict:
@@ -1276,7 +1321,7 @@ def collect_grid_column_images(block: dict, context: dict) -> list[dict]:
         token = image_token_from_block(block)
         path = download_feishu_media_openapi(token, context["outDir"], context["token"]) if token else None
         if path:
-            images.append({"src": path, "alt": "飞书图片"})
+            images.append({"src": path, "alt": image_caption_from_block(block) or "飞书图片"})
     for child in child_blocks(block, context):
         images.extend(collect_grid_column_images(child, context))
     return images
@@ -1357,7 +1402,9 @@ def block_to_markdown(block: dict, context: dict) -> str:
         mark_non_ordered_block(context, type_name)
         token = image_token_from_block(block)
         media_path = download_feishu_media_openapi(token, context["outDir"], context["token"]) if token else None
-        return join_markdown_parts(f"![飞书图片]({media_path})" if media_path else f"> 图片下载失败：{token}", children)
+        if not media_path:
+            return join_markdown_parts(f"> 图片下载失败：{token}", children)
+        return join_markdown_parts(image_markdown(image_caption_from_block(block), media_path), children)
     if type_name == "file":
         mark_non_ordered_block(context, type_name)
         return join_markdown_parts(file_markdown(block), children)
@@ -1440,6 +1487,13 @@ class FeishuHtmlMarkdownParser(HTMLParser):
         self.ensure_block()
         self.mark_non_ordered("media")
 
+    def append_column_caption(self, text: str) -> None:
+        if not str(text or "").strip():
+            return
+        caption = clean_inline_text(text)
+        if caption and self.current_grid_column is not None:
+            self.current_grid_column["caption_parts"].append(caption)
+
     def mark_non_ordered(self, kind: str) -> None:
         if not self.ordered_stack and (kind == "title" or re.match(r"^h[1-6]$", kind)):
             self.last_block_kind = kind
@@ -1500,6 +1554,10 @@ class FeishuHtmlMarkdownParser(HTMLParser):
                 attrs_dict.get("title") or attrs_dict.get("name") or attrs_dict.get("alt") or "飞书视频",
             )
             return
+        if tag == "figcaption":
+            self.ensure_block()
+            self.mark_non_ordered(tag)
+            return
         if tag in ("title", "p", "div"):
             self.ensure_block()
             self.mark_non_ordered(tag)
@@ -1537,7 +1595,7 @@ class FeishuHtmlMarkdownParser(HTMLParser):
             self.grid_stack.append([])
         elif tag == "column":
             if self.grid_stack:
-                self.current_grid_column = {"width": attrs_dict.get("width-ratio", "0.5"), "images": []}
+                self.current_grid_column = {"width": attrs_dict.get("width-ratio", "0.5"), "images": [], "caption_parts": []}
         elif tag == "li":
             self.ensure_block()
             if self.ordered_stack:
@@ -1618,6 +1676,11 @@ class FeishuHtmlMarkdownParser(HTMLParser):
         elif tag == "ol" and self.ordered_stack:
             self.ordered_stack.pop()
         elif tag == "column" and self.current_grid_column is not None:
+            caption = clean_inline_text(" ".join(self.current_grid_column.get("caption_parts") or []))
+            if caption:
+                for image in self.current_grid_column.get("images") or []:
+                    if is_generic_image_label(image.get("alt")):
+                        image["alt"] = caption
             if self.grid_stack:
                 self.grid_stack[-1].append(self.current_grid_column)
             self.current_grid_column = None
@@ -1633,6 +1696,8 @@ class FeishuHtmlMarkdownParser(HTMLParser):
         if not data:
             return
         if self.current_grid_column is not None:
+            if "img" not in self.stack and "video" not in self.stack and "source" not in self.stack:
+                self.append_column_caption(data)
             return
         if self.code_depth or "pre" in self.stack:
             self.append(data.replace("<br/>", "\n"))
