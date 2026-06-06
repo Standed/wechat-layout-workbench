@@ -91,6 +91,29 @@ def test_feishu_stream_image_with_image_alt_stays_image():
     assert src in html
 
 
+def test_image_alt_text_renders_as_caption_when_meaningful():
+    md2wechat = load_md2wechat_module()
+    theme = md2wechat.ACCOUNT_THEMES[md2wechat.DEFAULT_ACCOUNT]
+    html = md2wechat.md_to_html_body(
+        "![《丧尸清道夫》成片开场氛围片段](https://example.com/image.gif)",
+        theme,
+    )
+
+    assert '<img src="https://example.com/image.gif"' in html
+    assert "《丧尸清道夫》成片开场氛围片段" in html
+    assert "font-size: 13px" in html
+
+
+def test_generic_image_alt_does_not_render_as_caption():
+    md2wechat = load_md2wechat_module()
+    theme = md2wechat.ACCOUNT_THEMES[md2wechat.DEFAULT_ACCOUNT]
+    html = md2wechat.md_to_html_body("![test.jpg](https://example.com/test.jpg)", theme)
+
+    assert '<img src="https://example.com/test.jpg"' in html
+    assert html.count("test.jpg") == 2
+    assert "font-size: 13px" not in html
+
+
 def test_ordered_list_uses_wechat_stable_inline_markers():
     md2wechat = load_md2wechat_module()
     theme = md2wechat.ACCOUNT_THEMES[md2wechat.DEFAULT_ACCOUNT]
@@ -104,3 +127,39 @@ def test_ordered_list_uses_wechat_stable_inline_markers():
     assert "2.</span>" in html
     assert "text-align-last: left" in html
     assert "letter-spacing: 0" in html
+
+
+def test_toc_uses_second_and_third_level_when_no_body_h1():
+    md2wechat = load_md2wechat_module()
+    items = md2wechat.extract_toc_items(
+        "## 一、工具准备\n\n正文\n\n### 1. 安装工具\n\n### 2. 登录飞书\n\n## 二、写在最后"
+    )
+
+    assert items == [
+        {"title": "工具准备", "children": ["安装工具", "登录飞书"]},
+        {"title": "写在最后", "children": []},
+    ]
+
+
+def test_toc_uses_body_h1_and_h2_when_both_exist():
+    md2wechat = load_md2wechat_module()
+    items = md2wechat.extract_toc_items(
+        "# 一、资产构建\n\n## 1. 角色设计\n\n### 更深层会被忽略\n\n# 二、总结"
+    )
+
+    assert items == [
+        {"title": "资产构建", "children": ["角色设计"]},
+        {"title": "总结", "children": []},
+    ]
+
+
+def test_full_html_includes_generated_toc_before_body_headings():
+    md2wechat = load_md2wechat_module()
+    theme = md2wechat.ACCOUNT_THEMES[md2wechat.DEFAULT_ACCOUNT]
+    parsed = md2wechat.parse_markdown("# 文章标题\n\n## 一、工具准备\n\n### 1. 安装工具")
+    html = md2wechat.build_full_html(parsed, theme)
+
+    assert '<strong style="box-sizing: border-box;">目录</strong>' in html
+    assert "工具准备" in html
+    assert "安装工具" in html
+    assert html.index('<strong style="box-sizing: border-box;">目录</strong>') < html.index("<h3")

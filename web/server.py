@@ -660,16 +660,17 @@ def append_inline_style(tag: str, extra_style: str) -> str:
 def normalize_rich_html_layout(html: str, theme: dict) -> str:
     paragraph_font_size = theme.get("paragraph_font_size")
     paragraph_margin = theme.get("paragraph_margin")
+    paragraph_line_height = theme.get("paragraph_line_height")
     h2_font_size = theme.get("h2_font_size")
     image_margin = theme.get("image_margin")
-    if not any((paragraph_font_size, paragraph_margin, h2_font_size, image_margin)):
+    if not any((paragraph_font_size, paragraph_margin, paragraph_line_height, h2_font_size, image_margin)):
         return html
 
     def style_p(match: re.Match) -> str:
         extra = []
         if paragraph_font_size:
             extra.append(f"font-size: {paragraph_font_size}")
-        extra.append("line-height: 2em")
+        extra.append(f"line-height: {paragraph_line_height or '2em'}")
         if paragraph_margin:
             extra.append(f"margin: {paragraph_margin}")
         return append_inline_style(match.group(0), "; ".join(extra))
@@ -705,10 +706,11 @@ def rich_content_html(raw_html: str, account: str) -> dict:
         raise RuntimeError("请先粘贴富文本正文。")
     clean_html = normalize_rich_html_layout(clean_html, theme)
     paragraph_font_size = theme.get("paragraph_font_size", "15px")
+    paragraph_line_height = theme.get("paragraph_line_height", "1.8")
     header = md2wechat.build_header(theme)
     footer = md2wechat.build_footer(theme, theme["author"], [])
     content_html = (
-        f'<section style="font-size: {paragraph_font_size}; line-height: 1.8; color: rgb(51, 51, 51); '
+        f'<section style="font-size: {paragraph_font_size}; line-height: {paragraph_line_height}; color: rgb(51, 51, 51); '
         'font-family: -apple-system, BlinkMacSystemFont, Helvetica Neue, PingFang SC, '
         'Hiragino Sans GB, Microsoft YaHei, Arial, sans-serif; '
         'word-break: break-word; margin-bottom: 16px;">'

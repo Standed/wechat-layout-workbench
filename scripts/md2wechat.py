@@ -38,6 +38,7 @@ ACCOUNT_THEMES = {
         "primary_bg": "rgb(246, 243, 246)",
         "accent": "rgb(214, 168, 65)",       # 金色
         "author": "小石学长",
+        "paragraph_line_height": "1.6em",
     },
     "羊羊AI视频": {
         "primary": "rgb(0, 122, 255)",       # 蓝色
@@ -439,7 +440,7 @@ def md_to_html_body(md_body: str, theme: dict, preserve_paragraphs: bool = False
                 marker_text = f'{marker}.' if is_ordered else marker
                 item_html.append(
                     f'<p style="margin: 0 0 10px 0; padding: 0; '
-                    f'font-size: {item_font_size}; line-height: 2em; color: rgb(31, 35, 41); '
+                    f'font-size: {item_font_size}; line-height: {theme.get("paragraph_line_height", "2em")}; color: rgb(31, 35, 41); '
                     f'font-family: PingFang SC, system-ui, -apple-system, BlinkMacSystemFont, '
                     f'Helvetica Neue, Arial, sans-serif; text-align: left; text-align-last: left; '
                     f'letter-spacing: 0; word-break: normal; overflow-wrap: break-word;">'
@@ -470,6 +471,8 @@ def md_to_html_body(md_body: str, theme: dict, preserve_paragraphs: bool = False
                 next_line = lines[i + 1].strip()
                 if is_image_caption(next_line):
                     caption = next_line
+            if not caption and not is_generic_image_label(raw_alt_text):
+                caption = raw_alt_text
             image_style = (
                 'display: inline-block; max-width: 100%; height: auto; '
                 'border-radius: 12px; box-shadow: rgb(240, 240, 240) 0px 0px 0.5em 0px; '
@@ -656,8 +659,9 @@ def make_paragraph(content: str, indent: bool = False, theme: dict = None, prese
     padding = "padding-left: 1.5em; " if indent else ""
     paragraph_font_size = theme.get("paragraph_font_size", "15px") if theme else "15px"
     paragraph_margin = theme.get("paragraph_margin", "0 0 16px") if theme else "0 0 16px"
+    paragraph_line_height = theme.get("paragraph_line_height", "2em") if theme else "2em"
     p_style = (
-        f'font-size: {paragraph_font_size}; line-height: 2em; '
+        f'font-size: {paragraph_font_size}; line-height: {paragraph_line_height}; '
         f'font-family: PingFang SC, system-ui, -apple-system, BlinkMacSystemFont, '
         f'Helvetica Neue, Hiragino Sans GB, Microsoft YaHei UI, Microsoft YaHei, '
         f'Arial, sans-serif; color: rgb(31, 35, 41); '
@@ -829,6 +833,138 @@ def escape_attr(text: str) -> str:
     )
 
 
+def strip_toc_heading_prefix(text: str) -> str:
+    """目录里用圆形编号，所以去掉标题开头已有的章节编号。"""
+    value = text.strip()
+    patterns = [
+        r"^第[一二三四五六七八九十百千万]+[章节篇部分讲课]\s*",
+        r"^[一二三四五六七八九十百千万]+[、.．]\s*",
+        r"^[（(]?[一二三四五六七八九十百千万]+[）)]\s*",
+        r"^\d{1,2}[、．)]\s*",
+        r"^\d{1,2}\.\s+",
+    ]
+    for pattern in patterns:
+        value = re.sub(pattern, "", value).strip()
+    return value
+
+
+def plain_toc_title(text: str) -> str:
+    """把 Markdown 标题压成适合目录展示的纯文本。"""
+    value = re.sub(r"\s+#*$", "", text.strip())
+    value = re.sub(r"!\[([^\]]*)\]\([^)]+\)", r"\1", value)
+    value = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", value)
+    value = re.sub(r"`([^`]+)`", r"\1", value)
+    value = re.sub(r"(\*\*\*|\*\*|__|\*|_)(.*?)\1", r"\2", value)
+    value = re.sub(r"<[^>]+>", "", value)
+    value = strip_toc_heading_prefix(value)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def extract_toc_items(md_body: str) -> list[dict]:
+    """从正文标题提取两级目录。
+
+    规则：忽略文章 H1 标题之外，正文里出现的最小标题层级作为目录一级；
+    下一个标题层级作为目录二级。比如只有 ##/### 时，## 会成为主项，### 会成为灰色子项。
+    """
+    if re.search(r"<!--\s*toc\s*:\s*off\s*-->", md_body or "", flags=re.I):
+        return []
+
+    headings = []
+    in_code_block = False
+    for raw in (md_body or "").splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("```"):
+            in_code_block = not in_code_block
+            continue
+        if in_code_block:
+            continue
+        match = re.match(r"^(#{1,6})\s+(.+?)\s*$", stripped)
+        if not match:
+            continue
+        title = plain_toc_title(match.group(2))
+        if title and title != "目录":
+            headings.append({"level": len(match.group(1)), "title": title})
+
+    if not headings:
+        return []
+
+    levels = sorted({heading["level"] for heading in headings})
+    primary_level = levels[0]
+    secondary_level = levels[1] if len(levels) > 1 else None
+    items = []
+    for heading in headings:
+        if heading["level"] == primary_level:
+            items.append({"title": heading["title"], "children": []})
+        elif secondary_level and heading["level"] == secondary_level and items:
+            items[-1]["children"].append(heading["title"])
+    return items
+
+
+def build_toc_html(items: list[dict], theme: dict) -> str:
+    """生成可粘贴到公众号的目录块。"""
+    if not items:
+        return ""
+
+    primary = theme.get("toc_primary", "rgb(166, 91, 203)")
+    primary_soft = theme.get("toc_primary_soft", "rgb(192, 186, 215)")
+    bg = theme.get("toc_bg", "rgb(244, 241, 245)")
+    child_color = "rgb(162, 162, 162)"
+    title_color = "rgb(82, 82, 82)"
+
+    rows = []
+    for index, item in enumerate(items, start=1):
+        children = "".join(
+            f'<p style="margin: 0 0 5px; padding: 0; font-size: 13px; line-height: 1.8; '
+            f'color: {child_color}; box-sizing: border-box;">{escape_html(child)}</p>'
+            for child in item.get("children", [])
+        )
+        children_html = (
+            f'<section style="margin: 7px 0 0 50px; text-align: left; box-sizing: border-box;">'
+            f'{children}</section>'
+            if children
+            else ""
+        )
+        margin = "0" if index == len(items) else "0 0 13px"
+        rows.append(
+            f'<section style="margin: {margin}; box-sizing: border-box;">'
+            f'<section style="display: flex; align-items: center; text-align: left; box-sizing: border-box;">'
+            f'<section style="display: inline-block; width: 25px; height: 25px; border-radius: 50%; '
+            f'background-image: linear-gradient(90deg, {primary} 0%, {primary_soft} 100%); '
+            f'color: rgb(255, 255, 255); font-size: 15px; line-height: 25px; text-align: center; '
+            f'box-sizing: border-box;">{index:02d}</section>'
+            f'<section style="display: inline-block; width: 16px; margin: 0 9px; line-height: 0; '
+            f'box-sizing: border-box;">'
+            f'<section style="display: inline-block; width: 0; height: 0; border-top: 5px solid transparent; '
+            f'border-bottom: 5px solid transparent; border-left: 9px solid rgb(154, 221, 255); '
+            f'box-sizing: border-box;"><br/></section>'
+            f'</section>'
+            f'<p style="margin: 0; padding: 0; font-size: 15px; line-height: 1.6; color: {title_color}; '
+            f'box-sizing: border-box;"><strong style="box-sizing: border-box;">{escape_html(item["title"])}</strong></p>'
+            f'</section>{children_html}</section>'
+        )
+
+    return (
+        f'<section style="margin: 10px 0 26px; box-sizing: border-box;">'
+        f'<section style="text-align: center; margin: 6px 0 16px; box-sizing: border-box;">'
+        f'<section style="display: inline-block; vertical-align: middle; width: 58px; height: 3px; '
+        f'background-color: {primary}; box-sizing: border-box;"><br/></section>'
+        f'<section style="display: inline-block; vertical-align: middle; margin: 0 8px; color: {primary}; '
+        f'font-size: 20px; line-height: 1; box-sizing: border-box;">❖</section>'
+        f'<section style="display: inline-block; vertical-align: middle; background-color: {primary}; '
+        f'padding: 3px 13px; box-sizing: border-box;">'
+        f'<p style="margin: 0; padding: 0; font-size: 16px; line-height: 1.35; '
+        f'color: rgb(255, 255, 255); box-sizing: border-box;">'
+        f'<strong style="box-sizing: border-box;">目录</strong></p></section>'
+        f'<section style="display: inline-block; vertical-align: middle; margin: 0 8px; color: {primary}; '
+        f'font-size: 20px; line-height: 1; box-sizing: border-box;">❖</section>'
+        f'<section style="display: inline-block; vertical-align: middle; width: 58px; height: 3px; '
+        f'background-color: {primary}; box-sizing: border-box;"><br/></section>'
+        f'</section>'
+        f'<section style="background-color: {bg}; padding: 28px 22px 26px; box-sizing: border-box;">'
+        f'{"".join(rows)}</section></section>'
+    )
+
+
 def build_header(theme: dict) -> str:
     """生成固定顶部"""
     custom = theme.get("custom_header_html")
@@ -895,6 +1031,7 @@ def normalize_recommended(recommended: list) -> list[tuple[str, str]]:
 def build_full_html(parsed: dict, theme: dict) -> str:
     """组装完整的微信文章 HTML"""
     author = theme["author"]
+    toc_html = build_toc_html(extract_toc_items(parsed["body"]), theme)
 
     body_html = md_to_html_body(
         parsed["body"],
@@ -951,7 +1088,7 @@ def build_full_html(parsed: dict, theme: dict) -> str:
   font-family: -apple-system, BlinkMacSystemFont, Helvetica Neue, PingFang SC,
   Hiragino Sans GB, Microsoft YaHei, Arial, sans-serif;
   word-break: break-word; margin-bottom: 16px;">
-{header}{body_html}{footer}
+{header}{toc_html}{body_html}{footer}
 </section>
 </div>
 </body>

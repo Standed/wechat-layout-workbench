@@ -5,3 +5,4 @@ __pycache__/
 config/workbench-settings.json
 output/
 .pycache-check/
+.codex-run/

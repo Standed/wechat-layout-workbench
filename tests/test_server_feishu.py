@@ -49,8 +49,18 @@ def test_convert_markdown_can_preserve_feishu_paragraphs_and_bold():
 
     assert "第一段。不要被拆。" in html
     assert html.count("第一段。不要被拆。") == 1
+    assert "line-height: 1.6em" in html
     assert ">2.</span>" in html
     assert '<span style="font-weight: bold;">第二段加粗序号</span>' in html
+
+
+def test_rich_content_html_uses_xiyangshi_line_height():
+    server = load_server_module()
+    result = server.rich_content_html("<h1>富文本标题</h1><p>第一段。</p>", "西羊石AI视频")
+    html = result["contentHtml"]
+
+    assert "line-height: 1.6em" in html
+    assert "第一段。" in html
 
 
 def test_rich_content_html_sanitizes_and_preserves_inline_styles():
